@@ -139,3 +139,40 @@ When an artifact is copied to another channel, its advisory file is
 copied with it. There is no merged channel document, and this does not
 add new advance behavior beyond that copy. A version that did not move
 keeps the advisory file it already has.
+
+## Follow-up: entire risk of install / upgrade / remove
+
+v1 answers: “what CVEs does OSV currently list for **this published
+OPR artifact**?” That is not the whole risk of a pacman transaction.
+
+Someone about to install, upgrade, or remove a package needs the
+**transaction** view: the named package plus everything the operation
+pulls in, drops, or leaves behind.
+
+Not in this pipeline today:
+
+- No walk of `depends` / `optdepends` / `makedepends`.
+- No union of advisory files (or arch-audit) for those dependencies
+  onto the parent.
+- No SBOM / lockfile / osv-scanner pass over **vendored** copies
+  inside the artifact.
+- `fetch-advisories` POSTs one purl per db row. Empty OSV `vulns`
+  stays `missing`. It does not recurse.
+
+What a later producer (same feed shape, likely a **separate
+application/repo**) should do:
+
+1. Resolve the pacman transaction (install / upgrade / remove dry-run).
+2. For each OPR package in that set, read
+   `<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json` beside the package.
+3. For each Arch distro package in that set, join `arch-audit` / the
+   Arch tracker (not this sidecar).
+4. Optionally generate an SBOM of the artifact and query OSV for
+   vendored components, then write those CVEs onto the **root**
+   artifact’s feed (or a sibling field). That is a rollup, not v1.
+5. Hand the client (`HxHippy/omarchy-resolve#1`) a preview: CVEs
+   introduced vs resolved vs unchanged, including `missing`/`stale`.
+
+Until that exists, a UI must not imply "this install is clean"
+from one advisory file. It can only say "OSV's record for this
+OPR version," and must still show `missing` when OPR shipped first.
