@@ -1,0 +1,137 @@
+#!/bin/bash
+# Copy allowlisted signed packages from a stable tree into a restricted tree.
+# Restricted is not a VALID_MIRRORS channel and is not on edge→rc→stable.
+# Does not invoke GPG. Does not call bin/advance-channel.
+
+set -euo pipefail
+
+FROM_ROOT=""
+TO_ROOT=""
+ARCH=""
+ALLOWLIST=""
+
+usage() {
+  cat <<EOF
+Usage: $0 --from-root <stable-tree> --to-root <restricted-tree> --arch <arch> --allowlist <file>
+
+Copy allowlisted .pkg.tar.zst files and matching .sig files from
+<stable-tree>/stable/<arch>/ into <restricted-tree>/restricted/<arch>/.
+Copies omarchy.advisories.json when present. Exits 1 if an allowlisted
+package file has no .sig.
+EOF
+}
+
+require_opt() {
+  local flag=$1 value=${2-}
+  if [[ -z $value ]]; then
+    echo "$flag requires a value" >&2
+    exit 1
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --from-root)
+    require_opt "$1" "${2-}"
+    FROM_ROOT=$2
+    shift 2
+    ;;
+  --to-root)
+    require_opt "$1" "${2-}"
+    TO_ROOT=$2
+    shift 2
+    ;;
+  --arch)
+    require_opt "$1" "${2-}"
+    ARCH=$2
+    shift 2
+    ;;
+  --allowlist)
+    require_opt "$1" "${2-}"
+    ALLOWLIST=$2
+    shift 2
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "unknown option: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ -z $FROM_ROOT || -z $TO_ROOT || -z $ARCH || -z $ALLOWLIST ]]; then
+  echo "required: --from-root --to-root --arch --allowlist" >&2
+  usage >&2
+  exit 1
+fi
+
+src="$FROM_ROOT/stable/$ARCH"
+dst="$TO_ROOT/restricted/$ARCH"
+
+if [[ ! -d $src ]]; then
+  echo "stable tree not found: $src" >&2
+  exit 1
+fi
+if [[ ! -f $ALLOWLIST ]]; then
+  echo "allowlist not found: $ALLOWLIST" >&2
+  exit 1
+fi
+
+# Filename is <pkgname>-<pkgver>-<pkgrel>-<arch>.pkg.tar.zst; pkgname is
+# everything before the last three hyphen fields so omarchy does not match
+# omarchy-settings.
+pkgname_from_archive() {
+  local base=${1##*/}
+  base=${base%.sig}
+  case $base in
+  *.pkg.tar.zst) base=${base%.pkg.tar.zst} ;;
+  *)
+    echo "not a package archive: $1" >&2
+    return 1
+    ;;
+  esac
+  local without_arch=${base%-*}
+  local without_rel=${without_arch%-*}
+  printf '%s\n' "${without_rel%-*}"
+}
+
+mkdir -p "$dst"
+
+copied=0
+while IFS= read -r pkg || [[ -n ${pkg-} ]]; do
+  pkg=${pkg%%#*}
+  pkg=${pkg#"${pkg%%[![:space:]]*}"}
+  pkg=${pkg%"${pkg##*[![:space:]]}"}
+  [[ -n $pkg ]] || continue
+
+  shopt -s nullglob
+  matches=("$src/${pkg}-"*.pkg.tar.zst)
+  shopt -u nullglob
+
+  for archive in "${matches[@]}"; do
+    [[ -f $archive ]] || continue
+    name=$(pkgname_from_archive "$archive")
+    [[ $name == "$pkg" ]] || continue
+    sig="$archive.sig"
+    if [[ ! -f $sig ]]; then
+      echo "missing signature for $archive" >&2
+      exit 1
+    fi
+    cp -a "$archive" "$sig" "$dst/"
+    copied=$((copied + 1))
+  done
+done <"$ALLOWLIST"
+
+sidecar="$src/omarchy.advisories.json"
+if [[ -f $sidecar ]]; then
+  cp -a "$sidecar" "$dst/"
+  if [[ -f $sidecar.sig ]]; then
+    cp -a "$sidecar.sig" "$dst/"
+  fi
+fi
+
+echo "copied $copied allowlisted package(s) to $dst"

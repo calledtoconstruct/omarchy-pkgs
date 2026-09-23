@@ -1,0 +1,5 @@
+# Packages copied from stable into the restricted tree.
+# Keep this small. Adding a name is a security review, not a courtesy.
+omarchy
+omarchy-settings
+omarchy-keyring
