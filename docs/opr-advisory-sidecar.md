@@ -89,7 +89,9 @@ advisory band for brew/flatpak/apt routes.
 ## Refresh without rebuild
 
 ```bash
-# Produce a versioned feed from OSV, then ingest it:
+# Produce a versioned feed from OSV, then ingest it.
+# Default PURL map is data/opr-purl-map (omit --purl-map). Covered by
+# tests/fetch-advisories.sh, including opr-purl-map-canary.
 bin/fetch-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./advisories-feed
 bin/sync-advisories --mirror edge --arch x86_64 --feed ./advisories-feed
 

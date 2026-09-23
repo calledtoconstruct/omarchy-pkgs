@@ -107,6 +107,11 @@ done
 
 [[ -z "$FEED_DIR" ]] && FEED_DIR="$BUILD_ROOT/advisories-feed"
 
+DEFAULT_PURL_MAP="$BUILD_ROOT/data/opr-purl-map"
+if [[ -z ${PURL_MAP:-} && -f $DEFAULT_PURL_MAP ]]; then
+  PURL_MAP="$DEFAULT_PURL_MAP"
+fi
+
 DB_FILE="$REPO_DIR/omarchy.db.tar.zst"
 [[ -f "$DB_FILE" ]] || {
   print_error "Repository database not found: $DB_FILE"

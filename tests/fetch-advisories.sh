@@ -16,7 +16,7 @@ export OMARCHY_REPO_ROOT="$REPO_ROOT_TMP"
 REPO_DIR_TMP="$REPO_ROOT_TMP/edge/x86_64"
 DB="$REPO_DIR_TMP/omarchy.db.tar.zst"
 
-mkdir -p "$work/db-stage/mise-bin"
+mkdir -p "$work/db-stage/mise-bin" "$work/db-stage/opr-purl-map-canary"
 cat >"$work/db-stage/mise-bin/desc" <<EOF
 %FILENAME%
 mise-bin-1.0.0-1-x86_64.pkg.tar.zst
@@ -27,7 +27,17 @@ mise-bin
 %ARCH%
 x86_64
 EOF
-tar -C "$work/db-stage" -cf "$DB" mise-bin
+cat >"$work/db-stage/opr-purl-map-canary/desc" <<EOF
+%FILENAME%
+opr-purl-map-canary-0.0.1-1-x86_64.pkg.tar.zst
+%NAME%
+opr-purl-map-canary
+%VERSION%
+0.0.1-1
+%ARCH%
+x86_64
+EOF
+tar -C "$work/db-stage" -cf "$DB" mise-bin opr-purl-map-canary
 printf 'pkg\n' >"$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.pkg.tar.zst"
 
 cat >"$work/osv.json" <<'EOF'
@@ -109,6 +119,37 @@ OSV_STUB_RESPONSE="$work/osv-empty.json" PATH="$work/bin:$PATH" \
   --feed "$FEED" --purl-map "$work/purls" --package mise-bin >/dev/null
 [[ ! -f $feed_file ]] || {
   echo "empty OSV vulns must not write a feed (row stays missing)" >&2
+  exit 1
+}
+
+# Default map: omit --purl-map. The committed data/opr-purl-map must supply mise-bin.
+rm -rf "$FEED"
+mkdir -p "$FEED"
+printf '{ "vulns": [ { "id": "GHSA-dddd-eeee-ffff", "aliases": ["CVE-2026-9999"], "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }] } ] }\n' >"$work/osv-default.json"
+OSV_STUB_RESPONSE="$work/osv-default.json" PATH="$work/bin:$PATH" \
+  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 \
+  --feed "$FEED" --package mise-bin >/dev/null
+feed_file="$FEED/mise-bin/1.0.0-1/x86_64.json"
+[[ -f $feed_file ]] || {
+  echo "default purl map must let fetch-advisories query mise-bin without --purl-map" >&2
+  exit 1
+}
+jq -e '.cve_ids | index("CVE-2026-9999")' "$feed_file" >/dev/null || {
+  echo "default-map feed must collect CVE ids" >&2
+  exit 1
+}
+
+# If mise-bin is hardcoded, also map a second name exclusively via the default file.
+OSV_STUB_RESPONSE="$work/osv-default.json" PATH="$work/bin:$PATH" \
+  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 \
+  --feed "$FEED" --package opr-purl-map-canary >/dev/null
+canary_file="$FEED/opr-purl-map-canary/0.0.1-1/x86_64.json"
+[[ -f $canary_file ]] || {
+  echo "default purl map must supply opr-purl-map-canary without --purl-map" >&2
+  exit 1
+}
+jq -e '.cve_ids | index("CVE-2026-9999")' "$canary_file" >/dev/null || {
+  echo "default-map canary feed must collect CVE ids" >&2
   exit 1
 }
 

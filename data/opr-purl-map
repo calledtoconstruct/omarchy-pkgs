@@ -1,0 +1,8 @@
+# pkgname  purl with {version} replaced by pkgver (not pkgver-pkgrel)
+# Unmapped packages stay missing. That is correct for v1.
+mise-bin pkg:github/jdx/mise@{version}
+bun-bin pkg:github/oven-sh/bun@{version}
+localsend-bin pkg:github/localsend/localsend@{version}
+basecamp-cli pkg:github/basecamp/basecamp-cli@{version}
+# extra name used only by tests/fetch-advisories.sh default-map coverage
+opr-purl-map-canary pkg:github/example/canary@{version}
