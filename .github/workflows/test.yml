@@ -49,6 +49,7 @@ jobs:
               ./tests/advisory-sidecar.sh
               ./tests/advisory-carry.sh
               ./tests/fetch-advisories.sh
+              ./tests/demo-local-opr.sh
               ./tests/partial-release.sh
               ./tests/published-build-plan.sh
               ./tests/controller.sh

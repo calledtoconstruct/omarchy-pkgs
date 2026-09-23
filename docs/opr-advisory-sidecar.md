@@ -105,6 +105,17 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 # The sidecar changed; every .pkg.tar.zst kept its bytes.
 ```
 
+### Local mini OPR
+
+One channel (`edge`), one arch (`x86_64`), one package (`mise-bin`).
+No live OSV, no signing, no package rebuild. Default map is
+`data/opr-purl-map`.
+
+```
+# from a checkout, no production host
+OMARCHY_REPO_ROOT=/tmp/mini-opr ./tests/demo-local-opr.sh
+```
+
 Feed input is one JSON file per published artifact
 (`<feed>/<pkgname>/<pkgver>-<pkgrel>/<arch>.json`) with `pkgname`,
 `pkgver`, `pkgrel`, `arch`, `cve_ids`, `cve_max_severity`,
