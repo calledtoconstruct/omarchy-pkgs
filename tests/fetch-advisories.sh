@@ -85,16 +85,15 @@ jq -e '.cve_ids | index("CVE-2026-4242")' "$feed_file" >/dev/null || {
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
 
-key="mise-bin:1.0.0-1:x86_64"
-sidecar="$REPO_DIR_TMP/omarchy.advisories.json"
-[[ $(jq -r --arg k "$key" '.advisories[$k].scan_status' "$sidecar") == ok ]] || {
+sidecar="$REPO_DIR_TMP/advisories/mise-bin-1.0.0-1-x86_64.json"
+[[ $(jq -r '.scan_status' "$sidecar") == ok ]] || {
   echo "ingest of produced feed should scan ok" >&2
   exit 1
 }
 
 pkg_hash=$(sha256sum "$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.pkg.tar.zst" | awk '{print $1}')
-[[ $(jq -r --arg k "$key" '.advisories[$k].cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
-  echo "sidecar should carry the produced CVE" >&2
+[[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
+  echo "advisory file should carry the produced CVE" >&2
   exit 1
 }
 [[ $(sha256sum "$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.pkg.tar.zst" | awk '{print $1}') == "$pkg_hash" ]] || {

@@ -2,8 +2,8 @@
 # OPR advisory sidecar regression test (omacom/omarchy-pkgs#378).
 #
 # Verifies the v1 contract:
-# - sidecar lives beside the repo db and validates
-# - entries are keyed by pkgname:pkgver-pkgrel:arch
+# - one advisory file per artifact lives beside the repo db and validates
+# - the filename is pkgname-pkgver-pkgrel-arch
 # - a feed for another version does not stamp the live package
 # - two versions of one name keep two rows
 # - refresh updates the sidecar without touching package archives
@@ -97,50 +97,52 @@ EOF
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
 
-SIDECAR="$REPO_DIR_TMP/omarchy.advisories.json"
-[[ -f $SIDECAR ]] || {
-  echo "sidecar was not written beside the repo db" >&2
+MISE_FILE="$REPO_DIR_TMP/advisories/mise-bin-1.0.0-1-x86_64.json"
+OTHER_FILE="$REPO_DIR_TMP/advisories/other-pkg-2.0.0-1-x86_64.json"
+MISE_V2_FILE="$REPO_DIR_TMP/advisories/mise-bin-2.0.0-1-x86_64.json"
+[[ -f $MISE_FILE ]] || {
+  echo "mise-bin advisory file was not written" >&2
   exit 1
 }
-advisory_validate_sidecar "$SIDECAR"
+[[ ! -e $REPO_DIR_TMP/omarchy.advisories.json ]] || {
+  echo "channel-wide advisory document must not be written" >&2
+  exit 1
+}
+advisory_validate_sidecar "$MISE_FILE"
 
-[[ $(jq -r '.schema' "$SIDECAR") == 1 ]] || {
-  echo "sidecar schema is not v1" >&2
+[[ $(jq -r '.schema' "$MISE_FILE") == 1 ]] || {
+  echo "advisory schema is not v1" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].scan_status' "$SIDECAR") == ok ]] || {
+[[ $(jq -r '.scan_status' "$MISE_FILE") == ok ]] || {
   echo "mise-bin 1.0.0-1 should scan ok" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].pkgname' "$SIDECAR") == mise-bin ]] || {
+[[ $(jq -r '.pkgname' "$MISE_FILE") == mise-bin ]] || {
   echo "entry must name the package" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].cve_ids | length' "$SIDECAR") -eq 2 ]] || {
+[[ $(jq -r '.cve_ids | length' "$MISE_FILE") -eq 2 ]] || {
   echo "mise-bin should list two CVEs" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].severity_scale' "$SIDECAR") == CVSSv3 ]] || {
+[[ $(jq -r '.severity_scale' "$MISE_FILE") == CVSSv3 ]] || {
   echo "severity scale must be stated" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].pkgver' "$SIDECAR") == 1.0.0 ]] || {
+[[ $(jq -r '.pkgver' "$MISE_FILE") == 1.0.0 ]] || {
   echo "entry must pin the published pkgver" >&2
   exit 1
 }
-if jq -e '.advisories | has("mise-bin")' "$SIDECAR" >/dev/null; then
-  echo "sidecar must not key entries by package name alone" >&2
-  exit 1
-fi
-[[ $(jq -r --arg k "$OTHER_KEY" '.advisories[$k].scan_status' "$SIDECAR") == missing ]] || {
+[[ $(jq -r '.scan_status' "$OTHER_FILE") == missing ]] || {
   echo "unscanned package should be missing, not an error" >&2
   exit 1
 }
 
 # Banned v1 fields must never appear.
 if jq -e '.. | objects | has("safety_score") or has("capabilities") or has("ports")' \
-  "$SIDECAR" >/dev/null; then
-  echo "sidecar must not contain a safety score or capability tags" >&2
+  "$MISE_FILE" >/dev/null; then
+  echo "advisory file must not contain a safety score or capability tags" >&2
   exit 1
 fi
 
@@ -161,11 +163,11 @@ EOF
 rm -f "$FEED/mise-bin/1.0.0-1/x86_64.json"
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].scan_status' "$SIDECAR") == missing ]] || {
+[[ $(jq -r '.scan_status' "$MISE_FILE") == missing ]] || {
   echo "a feed for 9.9.9 must not stamp live 1.0.0-1" >&2
   exit 1
 }
-if jq -e --arg k "$MISE_KEY" '.advisories[$k].cve_ids | index("CVE-2026-9999")' "$SIDECAR" >/dev/null; then
+if jq -e '.cve_ids | index("CVE-2026-9999")' "$MISE_FILE" >/dev/null; then
   echo "mismatched feed CVE leaked onto the live package" >&2
   exit 1
 fi
@@ -199,16 +201,21 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "scan_source": "osv.dev"
 }
 EOF
-sidecar_before=$(sha256sum "$SIDECAR" | awk '{print $1}')
+other_advisory_before=$(sha256sum "$OTHER_FILE" | awk '{print $1}')
+sidecar_before=$(sha256sum "$MISE_FILE" | awk '{print $1}')
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
-sidecar_after=$(sha256sum "$SIDECAR" | awk '{print $1}')
+sidecar_after=$(sha256sum "$MISE_FILE" | awk '{print $1}')
 [[ $sidecar_before != "$sidecar_after" ]] || {
-  echo "new CVE did not update the sidecar" >&2
+  echo "new CVE did not update the mise-bin advisory file" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].cve_ids | length' "$SIDECAR") -eq 3 ]] || {
-  echo "sidecar did not pick up the new CVE" >&2
+[[ $(sha256sum "$OTHER_FILE" | awk '{print $1}') == "$other_advisory_before" ]] || {
+  echo "refresh rewrote an unrelated advisory file" >&2
+  exit 1
+}
+[[ $(jq -r '.cve_ids | length' "$MISE_FILE") -eq 3 ]] || {
+  echo "advisory file did not pick up the new CVE" >&2
   exit 1
 }
 [[ $(sha256sum "$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.pkg.tar.zst" | awk '{print $1}') == "$mise_before" ]] || {
@@ -236,7 +243,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
 EOF
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 72h >/dev/null
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].scan_status' "$SIDECAR") == stale ]] || {
+[[ $(jq -r '.scan_status' "$MISE_FILE") == stale ]] || {
   echo "old scan should read stale" >&2
   exit 1
 }
@@ -245,7 +252,7 @@ EOF
 printf '{not json' >"$FEED/mise-bin/1.0.0-1/x86_64.json"
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 72h >/dev/null
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].scan_status' "$SIDECAR") == error ]] || {
+[[ $(jq -r '.scan_status' "$MISE_FILE") == error ]] || {
   echo "malformed feed should read error" >&2
   exit 1
 }
@@ -266,11 +273,11 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
 EOF
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].scan_status' "$SIDECAR") == error ]] || {
+[[ $(jq -r '.scan_status' "$MISE_FILE") == error ]] || {
   echo "severity without a scale should read error" >&2
   exit 1
 }
-advisory_validate_sidecar "$SIDECAR"
+advisory_validate_sidecar "$MISE_FILE"
 
 # Filtered refresh preserves entries it did not ask about.
 write_feed mise-bin 1.0.0 1 x86_64 <<EOF
@@ -290,8 +297,8 @@ EOF
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 --package mise-bin \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
-[[ $(jq -r --arg k "$OTHER_KEY" '.advisories[$k].scan_status' "$SIDECAR") == missing ]] || {
-  echo "filtered refresh dropped an unrequested entry" >&2
+[[ $(jq -r '.scan_status' "$OTHER_FILE") == missing ]] || {
+  echo "filtered refresh dropped an unrequested advisory file" >&2
   exit 1
 }
 
@@ -324,15 +331,15 @@ write_feed mise-bin 2.0.0 1 x86_64 <<EOF
 EOF
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
-[[ $(jq -r --arg k "$MISE_KEY" '.advisories[$k].pkgver' "$SIDECAR") == 1.0.0 ]] || {
-  echo "version 1.0.0-1 must keep its own row" >&2
+[[ $(jq -r '.pkgver' "$MISE_FILE") == 1.0.0 ]] || {
+  echo "version 1.0.0-1 must keep its own file" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_V2_KEY" '.advisories[$k].pkgver' "$SIDECAR") == 2.0.0 ]] || {
-  echo "version 2.0.0-1 must keep its own row" >&2
+[[ $(jq -r '.pkgver' "$MISE_V2_FILE") == 2.0.0 ]] || {
+  echo "version 2.0.0-1 must keep its own file" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$MISE_V2_KEY" '.advisories[$k].cve_ids[0]' "$SIDECAR") == CVE-2026-2000 ]] || {
+[[ $(jq -r '.cve_ids[0]' "$MISE_V2_FILE") == CVE-2026-2000 ]] || {
   echo "version 2.0.0-1 must keep its own CVEs" >&2
   exit 1
 }

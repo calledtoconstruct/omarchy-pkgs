@@ -18,33 +18,30 @@ application and repository**, not in omarchy-pkgs.
 
 ## What it is
 
-A sidecar beside the pacman database, per channel/arch:
+One signed file per published artifact, beside the pacman database:
 
-- `pkgs.omarchy.org/<channel>/<arch>/omarchy.advisories.json`
-- `pkgs.omarchy.org/<channel>/<arch>/omarchy.advisories.json.sig`
+- `pkgs.omarchy.org/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json`
+- `pkgs.omarchy.org/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json.sig`
 
-Entries are keyed by `pkgname:pkgver-pkgrel:arch` so two published
-versions cannot clobber each other. A feed for another version does
-not stamp the live package.
+The filename is the key, so two published versions cannot clobber each
+other. A new package adds one file. A refresh replaces that file and
+leaves every other advisory file alone. A missing file means
+`scan_status=missing`. A feed for another version does not stamp the
+live package.
 
 ```json
 {
-  "schema": 1, "channel": "edge", "arch": "x86_64",
-  "generated_at": "2026-09-11T00:00:00Z",
-  "advisories": {
-    "mise-bin:2026.9.1-1:x86_64": {
-      "pkgname": "mise-bin",
-      "pkgver": "2026.9.1", "pkgrel": "1", "arch": "x86_64",
-      "artifact": "mise-bin-2026.9.1-1-x86_64.pkg.tar.zst",
-      "cve_ids": ["CVE-2026-12345"],
-      "cve_max_severity": "HIGH", "severity_scale": "CVSSv3",
-      "advisory_as_of": "2026-09-10T00:00:00Z",
-      "scanned_at": "2026-09-11T00:00:00Z",
-      "scan_source": "osv.dev",
-      "scan_status": "ok",
-      "note": ""
-    }
-  }
+  "schema": 1,
+  "pkgname": "mise-bin",
+  "pkgver": "2026.9.1", "pkgrel": "1", "arch": "x86_64",
+  "artifact": "mise-bin-2026.9.1-1-x86_64.pkg.tar.zst",
+  "cve_ids": ["CVE-2026-12345"],
+  "cve_max_severity": "HIGH", "severity_scale": "CVSSv3",
+  "advisory_as_of": "2026-09-10T00:00:00Z",
+  "scanned_at": "2026-09-11T00:00:00Z",
+  "scan_source": "osv.dev",
+  "scan_status": "ok",
+  "note": ""
 }
 ```
 
@@ -78,11 +75,10 @@ advisory band for brew/flatpak/apt routes.
   Maintainers are never the writers; CVE data lives outside
   `.omarchy/package.json` and the PKGBUILD precisely so it can refresh
   when the feed moves even if the bits did not.
-- The sidecar is **independently signed** with the same OPR repo key
-  that signs packages (detached `.sig`, like the database). `sync-repo`
-  already publishes it: the package upload passes everything except
-  `omarchy.db*`/`omarchy.files*`, and the database upload covers
-  `omarchy.*`, which includes the sidecar and its signature.
+- Each advisory file is **independently signed** with the same OPR repo
+  key that signs packages (detached `.sig`). Publishing one artifact
+  uploads that file and its signature. It does not rewrite a channel-wide
+  document.
 - "Trusted partner" writers are explicitly later: named org + key +
   audit log + revocation, or nothing.
 
@@ -135,10 +131,7 @@ remains the authority on what is installed.
 
 ## Channel movement
 
-`bin/repo advance` carries advisory entries forward with the packages
-they describe (edge → rc → stable, `--arch` per architecture):
-entries for moved **artifacts** (same pkgname:pkgver-pkgrel:arch) are
-merged into the destination sidecar, and the destination database
-remains the authority on which versions exist. A version that advance
-did not move keeps its old entry until the next ingest refresh marks
-it missing/stale.
+When an artifact is copied to another channel, its advisory file is
+copied with it. There is no merged channel document, and this does not
+add new advance behavior beyond that copy. A version that did not move
+keeps the advisory file it already has.

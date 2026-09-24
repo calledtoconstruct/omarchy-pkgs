@@ -15,6 +15,7 @@ source "$BUILD_ROOT/helpers/message-helpers.sh"
 source "$BUILD_ROOT/helpers/paths.sh"
 source "$BUILD_ROOT/helpers/lock-helpers.sh"
 source "$BUILD_ROOT/helpers/package-metadata.sh"
+source "$BUILD_ROOT/helpers/advisory-helpers.sh"
 source "$BUILD_ROOT/helpers/basecamp-notifier.sh"
 
 FROM=""
@@ -264,6 +265,32 @@ package_eligible() {
   package_moves_to_channel "$pkgdir" "$TO"
 }
 
+# Copy the per-artifact advisory file with the package. Advisory bytes may
+# change later; this only carries the file that belongs to the artifact.
+# It does not merge a channel-wide document.
+carry_advisory() {
+  local filename="$1"
+  local src_adv dest_adv
+  src_adv=$(advisory_path_for_package_file "$SOURCE_DIR" "$filename")
+  dest_adv=$(advisory_path_for_package_file "$TARGET_DIR" "$filename")
+  [[ -f "$src_adv" ]] || return 0
+  if [[ -f "$dest_adv" ]] && cmp -s "$src_adv" "$dest_adv"; then
+    return 0
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  would copy advisory: $(basename "$src_adv")"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest_adv")"
+  cp -p "$src_adv" "$dest_adv"
+  if [[ -f "$src_adv.sig" ]]; then
+    cp -p "$src_adv.sig" "$dest_adv.sig"
+  else
+    rm -f "$dest_adv.sig"
+  fi
+  echo "  copied advisory: $(basename "$dest_adv")"
+}
+
 mkdir -p "$TARGET_DIR"
 
 COPIED=0
@@ -296,6 +323,7 @@ while IFS=$'\t' read -r name base filename; do
 
   if [[ -f "$dest" ]]; then
     if cmp -s "$src" "$dest"; then
+      carry_advisory "$filename"
       # A crash between the package and signature copies leaves an unsigned
       # package behind; the bytes are identical, so the source signature is
       # valid for it. Package + signature resume as one unit.
@@ -321,6 +349,7 @@ while IFS=$'\t' read -r name base filename; do
     cp -p "$sig" "$dest.sig"
     echo "  copied: $filename (+ .sig)"
   fi
+  carry_advisory "$filename"
   COPIED=$((COPIED + 1))
   COPIED_FILES+="$filename"$'\n'
 done < <(read_manifest)
@@ -363,61 +392,6 @@ print_info "Cleaning $TO repository..."
 
 print_info "Updating $TO repository database..."
 "$BUILD_ROOT/bin/update-repo" --mirror "$TO" --arch "$ARCH"
-
-# OPR advisory sidecar (#378): carry CVE metadata for moved artifacts.
-# Destination db is the authority on which versions exist. Entries merge by
-# pkgname:pkgver-pkgrel:arch and never rewrite a package file. A merged
-# sidecar is new bytes, so its detached signature is dropped with a warning
-# until the next signed ingest refresh.
-if [[ -f "$SOURCE_DIR/omarchy.advisories.json" ]]; then
-  if [[ ! -f "$TARGET_DIR/omarchy.advisories.json" ]]; then
-    cp -p "$SOURCE_DIR/omarchy.advisories.json" "$TARGET_DIR/omarchy.advisories.json"
-    [[ -f "$SOURCE_DIR/omarchy.advisories.json.sig" ]] &&
-      cp -p "$SOURCE_DIR/omarchy.advisories.json.sig" "$TARGET_DIR/omarchy.advisories.json.sig" || true
-    echo "  carried advisory sidecar from $FROM (new destination file)"
-  else
-    dest_keys=$(tar -xOf "$TARGET_DIR/omarchy.db.tar.zst" --wildcards '*/desc' 2>/dev/null |
-      awk '
-        function emit() {
-          if (name != "" && version != "") {
-            pkgrel = version
-            sub(/.*-/, "", pkgrel)
-            pkgver = version
-            sub(/-[^-]+$/, "", pkgver)
-            if (arch == "") arch = "x86_64"
-            printf "%s:%s-%s:%s\n", name, pkgver, pkgrel, arch
-          }
-          name=""; version=""; arch=""
-        }
-        $0 == "%FILENAME%" { emit(); getline; next }
-        $0 == "%NAME%" { getline; name=$0; next }
-        $0 == "%VERSION%" { getline; version=$0; next }
-        $0 == "%ARCH%" { getline; arch=$0; next }
-        END { emit() }
-      ' | sort -u | jq -R . | jq -s .)
-    merged=$(mktemp)
-    if jq -s --argjson dest_keys "$dest_keys" '
-        (.[1].advisories // {}) as $src |
-        (.[0].advisories // {}) as $dst |
-        ($dest_keys | map({(.): true}) | add // {}) as $wanted |
-        {schema: 1, channel: .[0].channel, arch: .[0].arch,
-         generated_at: (.[0].generated_at // .[1].generated_at // ""),
-         advisories: ($dst + ($src | with_entries(select(.key as $k | $wanted[$k]))))}
-      ' "$TARGET_DIR/omarchy.advisories.json" \
-      "$SOURCE_DIR/omarchy.advisories.json" >"$merged" 2>/dev/null &&
-      jq -e '.schema == 1 and (.advisories | type == "object")' \
-        "$merged" >/dev/null 2>&1; then
-      if ! cmp -s "$merged" "$TARGET_DIR/omarchy.advisories.json"; then
-        cp "$merged" "$TARGET_DIR/omarchy.advisories.json"
-        rm -f "$TARGET_DIR/omarchy.advisories.json.sig"
-        echo "  merged advisory sidecar from $FROM (signature dropped; re-sign via bin/sync-advisories)"
-      fi
-    else
-      print_warning "Could not merge advisory sidecar from $FROM; leaving destination sidecar unchanged"
-    fi
-    rm -f "$merged"
-  fi
-fi
 
 echo ""
 print_info "Syncing $TO repository to remote..."

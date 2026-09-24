@@ -3,10 +3,12 @@
 # (omacom/omarchy-pkgs#378, first milestone)
 #
 # Reads the channel's pacman database for the published package set, merges
-# per-package CVE reports from a feed directory, and writes
-#   <repo>/<channel>/<arch>/omarchy.advisories.json (+ .sig)
-# Package archives are never touched: a new CVE updates the sidecar while
-# every .pkg.tar.zst keeps its bytes.
+# per-package CVE reports from a feed directory, and writes one file per
+# artifact:
+#   <repo>/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json
+#   plus a detached .sig
+# A refresh replaces only the artifacts whose advisory changed. Package
+# archives are never touched.
 #
 # Feed directory layout (OPR-operated ingest input, not checked-in CVE data):
 #   <feed>/<pkgname>/<pkgver>-<pkgrel>/<arch>.json
@@ -49,7 +51,7 @@ usage() {
   cat <<EOF
 Usage: $0 [OPTIONS]
 
-Refresh the OPR advisory sidecar for one channel/arch without rebuilding.
+Refresh OPR advisory files for one channel/arch without rebuilding.
 
 Options:
   --mirror <edge|rc|stable>   Channel (default: edge; --channel is accepted too)
@@ -61,7 +63,7 @@ Options:
   --stale-after <duration>    Mark scans older than this stale (default: 72h;
                               bare seconds or s/m/h/d suffix)
   --dry-run                   Show the plan; write nothing
-  --no-sign                   Write the sidecar without a detached .sig
+  --no-sign                   Write advisory files without a detached .sig
   -h, --help                  Show this help message
 EOF
 }
@@ -146,13 +148,13 @@ DB_FILE="$REPO_DIR/omarchy.db.tar.zst"
   print_error "Repository database not found: $DB_FILE"
   exit 1
 }
-SIDECAR=$(advisory_sidecar_path "$REPO_DIR")
+ADVISORY_DIR=$(advisory_dir "$REPO_DIR")
 NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 NOW_EPOCH=$(date -u +%s)
 
 print_header "Sync Advisories ($MIRROR/$ARCH)"
 print_info "Database: $DB_FILE"
-print_info "Sidecar:  $SIDECAR"
+print_info "Advisories: $ADVISORY_DIR"
 print_info "Feed:     $FEED_DIR"
 print_info "Stale after: $STALE_AFTER"
 [[ ${#PACKAGES[@]} -gt 0 ]] && print_info "Packages: ${PACKAGES[*]}"
@@ -327,56 +329,74 @@ while IFS=$'\t' read -r name version db_arch filename; do
     >>"$ENTRIES"
 done < <(read_db_manifest)
 
-# Preserve entries whose package name was not in a filtered (--package) run.
-if [[ ${#PACKAGES[@]} -gt 0 && -f "$SIDECAR" ]]; then
-  jq -c '
-    .advisories // {} | to_entries[] |
-    select(.value.pkgname as $n | $ARGS.positional | index($n) | not) |
-    {key, value}
-  ' "$SIDECAR" --args "${PACKAGES[@]}" >>"$ENTRIES" 2>/dev/null || true
-fi
-
-NEW_SIDECAR="$WORK/omarchy.advisories.json"
-jq -c -s --arg channel "$MIRROR" --arg arch "$ARCH" --arg generated_at "$NOW_UTC" \
-  --argjson schema "$ADVISORY_SCHEMA_VERSION" \
-  '{schema: $schema, channel: $channel, arch: $arch,
-    generated_at: $generated_at,
-    advisories: (map({(.key): .value}) | add // {})}' \
-  "$ENTRIES" >"$NEW_SIDECAR"
-advisory_validate_sidecar "$NEW_SIDECAR"
-
 print_info "ok=$OK_COUNT stale=$STALE_COUNT missing=$MISSING_COUNT error=$ERROR_COUNT"
 
+sign_advisory_file() {
+  local path="$1"
+  if [[ -n "${GPG_PRIVATE_KEY:-}" && -n "${GPG_PASSPHRASE:-}" ]]; then
+    local key_home key_id
+    key_home=$(mktemp -d)
+    chmod 700 "$key_home"
+    echo "$GPG_PRIVATE_KEY" | GNUPGHOME="$key_home" gpg --batch --import 2>/dev/null
+    key_id=$(GNUPGHOME="$key_home" gpg --list-secret-keys --keyid-format LONG 2>/dev/null |
+      grep "^sec" | head -1 | awk '{print $2}' | cut -d/ -f2)
+    GNUPGHOME="$key_home" gpg --batch --yes --pinentry-mode loopback \
+      --passphrase "$GPG_PASSPHRASE" --detach-sign --no-armor \
+      --local-user "$key_id" -o "$path.sig" "$path"
+    rm -rf "$key_home"
+    return 0
+  fi
+  if command -v gpg >/dev/null 2>&1 && gpg --list-secret-keys >/dev/null 2>&1; then
+    gpg --batch --yes --detach-sign --no-armor -o "$path.sig" "$path"
+    return 0
+  fi
+  return 1
+}
+
+WROTE=0
+UNCHANGED=0
+while IFS= read -r row; do
+  [[ -n "$row" ]] || continue
+  name=$(jq -r '.value.pkgname' <<<"$row")
+  pkgver=$(jq -r '.value.pkgver' <<<"$row")
+  pkgrel=$(jq -r '.value.pkgrel' <<<"$row")
+  arch=$(jq -r '.value.arch' <<<"$row")
+  filename=$(advisory_artifact_name "$name" "$pkgver" "$pkgrel" "$arch")
+  rendered="$WORK/$filename"
+  jq -c -S --argjson schema "$ADVISORY_SCHEMA_VERSION" '.value + {schema: $schema}' <<<"$row" >"$rendered"
+  advisory_validate_sidecar "$rendered"
+  dest="$ADVISORY_DIR/$filename"
+  if [[ -f "$dest" ]] && cmp -s "$rendered" "$dest"; then
+    UNCHANGED=$((UNCHANGED + 1))
+    continue
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  would write: advisories/$filename"
+    WROTE=$((WROTE + 1))
+    continue
+  fi
+  mkdir -p "$ADVISORY_DIR"
+  cp "$rendered" "$dest"
+  WROTE=$((WROTE + 1))
+  if [[ "$NO_SIGN" == true ]]; then
+    rm -f "$dest.sig"
+    continue
+  fi
+  if sign_advisory_file "$dest"; then
+    :
+  else
+    print_warning "No GPG key available; leaving advisories/$filename unsigned"
+  fi
+done <"$ENTRIES"
+
+print_info "wrote=$WROTE unchanged=$UNCHANGED"
+
 if [[ "$DRY_RUN" == true ]]; then
-  print_warning "Dry run: sidecar unchanged"
-  jq '.' "$NEW_SIDECAR"
+  print_warning "Dry run: advisory files unchanged"
   exit 0
 fi
 
-mkdir -p "$REPO_DIR"
-cp "$NEW_SIDECAR" "$SIDECAR"
-print_success "Wrote $SIDECAR (package archives unchanged)"
-
-if [[ "$NO_SIGN" == true ]]; then
-  print_warning "Skipping detached signature (--no-sign); clients should warn until it is signed"
-  exit 0
-fi
-
-# Independently signed with the OPR repo key, like the pacman database.
-if [[ -n "${GPG_PRIVATE_KEY:-}" && -n "${GPG_PASSPHRASE:-}" ]]; then
-  key_home=$(mktemp -d)
-  chmod 700 "$key_home"
-  echo "$GPG_PRIVATE_KEY" | GNUPGHOME="$key_home" gpg --batch --import 2>/dev/null
-  key_id=$(GNUPGHOME="$key_home" gpg --list-secret-keys --keyid-format LONG 2>/dev/null |
-    grep "^sec" | head -1 | awk '{print $2}' | cut -d/ -f2)
-  GNUPGHOME="$key_home" gpg --batch --yes --pinentry-mode loopback \
-    --passphrase "$GPG_PASSPHRASE" --detach-sign --no-armor \
-    --local-user "$key_id" -o "$SIDECAR.sig" "$SIDECAR"
-  rm -rf "$key_home"
-  print_success "Signed $SIDECAR.sig"
-elif command -v gpg >/dev/null 2>&1 && gpg --list-secret-keys >/dev/null 2>&1; then
-  gpg --batch --yes --detach-sign --no-armor -o "$SIDECAR.sig" "$SIDECAR"
-  print_success "Signed $SIDECAR.sig"
-else
-  print_warning "No GPG key available; leaving $SIDECAR unsigned (clients treat unsigned as warn, fail-open)"
-fi
+# The channel-wide document is not the published form. Drop a leftover copy
+# so readers do not keep using it.
+rm -f "$REPO_DIR/omarchy.advisories.json" "$REPO_DIR/omarchy.advisories.json.sig"
+print_success "Advisory files are under $ADVISORY_DIR (package archives unchanged)"
