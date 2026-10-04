@@ -85,7 +85,7 @@ jq -e '.cve_ids | index("CVE-2026-4242")' "$feed_file" >/dev/null || {
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
 
-sidecar="$REPO_DIR_TMP/advisories/mise-bin-1.0.0-1-x86_64.json"
+sidecar="$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.advisory.json"
 [[ $(jq -r '.scan_status' "$sidecar") == ok ]] || {
   echo "ingest of produced feed should scan ok" >&2
   exit 1

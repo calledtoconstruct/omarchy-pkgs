@@ -2,7 +2,7 @@
 # OPR advisory sidecar regression test (omacom/omarchy-pkgs#378).
 #
 # Verifies the v1 contract:
-# - one advisory file per artifact lives beside the repo db and validates
+# - one advisory file per artifact lives beside its package and validates
 # - the filename is pkgname-pkgver-pkgrel-arch
 # - a feed for another version does not stamp the live package
 # - two versions of one name keep two rows
@@ -97,9 +97,13 @@ EOF
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$FEED" --no-sign --stale-after 720h >/dev/null
 
-MISE_FILE="$REPO_DIR_TMP/advisories/mise-bin-1.0.0-1-x86_64.json"
-OTHER_FILE="$REPO_DIR_TMP/advisories/other-pkg-2.0.0-1-x86_64.json"
-MISE_V2_FILE="$REPO_DIR_TMP/advisories/mise-bin-2.0.0-1-x86_64.json"
+MISE_FILE="$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.advisory.json"
+OTHER_FILE="$REPO_DIR_TMP/other-pkg-2.0.0-1-x86_64.advisory.json"
+MISE_V2_FILE="$REPO_DIR_TMP/mise-bin-2.0.0-1-x86_64.advisory.json"
+[[ ! -e $REPO_DIR_TMP/advisories ]] || {
+  echo "advisory files must sit beside the package, not in advisories/" >&2
+  exit 1
+}
 [[ -f $MISE_FILE ]] || {
   echo "mise-bin advisory file was not written" >&2
   exit 1

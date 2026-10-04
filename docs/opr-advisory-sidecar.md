@@ -18,10 +18,10 @@ application and repository**, not in omarchy-pkgs.
 
 ## What it is
 
-One signed file per published artifact, beside the pacman database:
+One signed file per published artifact, beside that package archive:
 
-- `pkgs.omarchy.org/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json`
-- `pkgs.omarchy.org/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json.sig`
+- `pkgs.omarchy.org/<channel>/<arch>/<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json`
+- `pkgs.omarchy.org/<channel>/<arch>/<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json.sig`
 
 The filename is the key, so two published versions cannot clobber each
 other. A new package adds one file. A refresh replaces that file and
@@ -76,8 +76,12 @@ advisory band for brew/flatpak/apt routes.
   `.omarchy/package.json` and the PKGBUILD precisely so it can refresh
   when the feed moves even if the bits did not.
 - Each advisory file is **independently signed** with the same OPR repo
-  key that signs packages (detached `.sig`). Publishing one artifact
-  uploads that file and its signature. It does not rewrite a channel-wide
+  key that signs packages (detached `.sig`). `bin/publish-artifact` uploads
+  that file when it is sitting beside the package. `bin/sync-repo` uploads
+  advisory files with checksums, so a refresh replaces the remote copy.
+  The package upload does not overwrite them. `bin/promote-build`,
+  `bin/advance-channel`, `bin/remove-package`, and `bin/clean-repo` carry
+  or delete the advisory with the package. There is no channel-wide
   document.
 - "Trusted partner" writers are explicitly later: named org + key +
   audit log + revocation, or nothing.

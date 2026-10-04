@@ -6,8 +6,8 @@
 # answer?" by ingesting existing CVE sources. OPR does not scan the
 # package. A version with no source report yet is missing, fail-open.
 #
-# Location: one file per published artifact, beside the pacman database:
-#   pkgs.omarchy.org/<channel>/<arch>/advisories/<pkgname>-<pkgver>-<pkgrel>-<arch>.json
+# Location: one file per published artifact, beside that package archive:
+#   pkgs.omarchy.org/<channel>/<arch>/<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json
 #   plus a detached .sig
 #
 # A new package adds one file. A refresh replaces that file and leaves every
@@ -40,32 +40,25 @@
 # print an OPR advisory band for OPR built-here artifacts, never for
 # brew/flatpak/apt routes.
 
-ADVISORY_DIR_NAME="advisories"
 ADVISORY_SCHEMA_VERSION=1
 ADVISORY_VALID_STATUSES="ok stale missing error"
-
-advisory_dir() {
-  local repo_dir="${1:-${REPO_DIR:-}}"
-  [[ -n "$repo_dir" ]] || return 1
-  echo "$repo_dir/$ADVISORY_DIR_NAME"
-}
 
 # Published filename for one artifact, without the directory.
 advisory_artifact_name() {
   local name="$1" pkgver="$2" pkgrel="$3" arch="$4"
-  echo "${name}-${pkgver}-${pkgrel}-${arch}.json"
+  echo "${name}-${pkgver}-${pkgrel}-${arch}.advisory.json"
 }
 
 advisory_artifact_path() {
   local repo_dir="$1" name="$2" pkgver="$3" pkgrel="$4" arch="$5"
-  echo "$(advisory_dir "$repo_dir")/$(advisory_artifact_name "$name" "$pkgver" "$pkgrel" "$arch")"
+  echo "$repo_dir/$(advisory_artifact_name "$name" "$pkgver" "$pkgrel" "$arch")"
 }
 
-# advisories/<pkgfile-without-.pkg.tar.zst>.json for a package archive name.
+# <repo>/<pkgfile-without-.pkg.tar.*>.advisory.json beside the package archive.
 advisory_path_for_package_file() {
   local repo_dir="$1" filename="$2"
-  local stem="${filename%.pkg.tar.zst}"
-  echo "$(advisory_dir "$repo_dir")/${stem}.json"
+  local stem="${filename%.pkg.tar.*}"
+  echo "$repo_dir/${stem}.advisory.json"
 }
 
 advisory_valid_status() {
