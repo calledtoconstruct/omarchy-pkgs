@@ -16,7 +16,8 @@ mkdir -p "$from/stable/x86_64" "$to"
 : >"$from/stable/x86_64/omarchy-keyring-1.0-1-x86_64.pkg.tar.zst.sig"
 # not allowlisted
 : >"$from/stable/x86_64/mise-bin-1.0-1-x86_64.pkg.tar.zst"
-printf '{ "schema": 1, "advisories": {} }\n' >"$from/stable/x86_64/omarchy.advisories.json"
+printf '{ "schema": 1, "pkgname": "omarchy", "scan_status": "ok" }\n' >"$from/stable/x86_64/omarchy-1.0-1-x86_64.advisory.json"
+printf '{ "schema": 1, "pkgname": "mise-bin", "scan_status": "ok" }\n' >"$from/stable/x86_64/mise-bin-1.0-1-x86_64.advisory.json"
 
 "$ROOT/bin/sync-restricted" --from-root "$from" --to-root "$to" --arch x86_64 \
   --allowlist "$ROOT/data/restricted/allowlist"
@@ -29,8 +30,12 @@ printf '{ "schema": 1, "advisories": {} }\n' >"$from/stable/x86_64/omarchy.advis
   echo "signature not copied" >&2
   exit 1
 }
-[[ -f $to/restricted/x86_64/omarchy.advisories.json ]] || {
-  echo "sidecar not copied" >&2
+[[ -f $to/restricted/x86_64/omarchy-1.0-1-x86_64.advisory.json ]] || {
+  echo "advisory not copied with the allowlisted package" >&2
+  exit 1
+}
+[[ ! -e $to/restricted/x86_64/mise-bin-1.0-1-x86_64.advisory.json ]] || {
+  echo "advisory for a non-allowlisted package leaked" >&2
   exit 1
 }
 [[ ! -e $to/restricted/x86_64/mise-bin-1.0-1-x86_64.pkg.tar.zst ]] || {

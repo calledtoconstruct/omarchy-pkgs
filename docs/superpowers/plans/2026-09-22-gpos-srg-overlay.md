@@ -197,7 +197,7 @@ Work from: `/home/joseph/code/omarchy-pkgs/.worktrees/feat-opr-restricted-channe
 - Consumes: `--from-root <stable-tree>` `--to-root <restricted-tree>` `--arch x86_64` `--allowlist data/restricted/allowlist`
 - Allowlist: one pkgname per line, comments with `#`
 - First allowlist: `omarchy`, `omarchy-settings`, `omarchy-keyring`
-- Copies `$from/stable/$arch/${pkg}-*.pkg.tar.zst` and matching `.sig` plus `omarchy.advisories.json` if present. Does not copy packages absent from the allowlist. Does not call GPG.
+- Copies `$from/stable/$arch/${pkg}-*.pkg.tar.zst`, the matching `.sig`, and that package's `*.advisory.json` when present. Does not copy packages absent from the allowlist, or their advisories. Does not call GPG.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -222,7 +222,7 @@ mkdir -p "$from/stable/x86_64" "$to"
 : >"$from/stable/x86_64/omarchy-keyring-1.0-1-x86_64.pkg.tar.zst.sig"
 # not allowlisted
 : >"$from/stable/x86_64/mise-bin-1.0-1-x86_64.pkg.tar.zst"
-printf '{ "schema": 1, "advisories": {} }\n' >"$from/stable/x86_64/omarchy.advisories.json"
+printf '{ "schema": 1, "pkgname": "omarchy", "scan_status": "ok" }\n' >"$from/stable/x86_64/omarchy-1.0-1-x86_64.advisory.json"
 
 "$ROOT/bin/sync-restricted" --from-root "$from" --to-root "$to" --arch x86_64 \
   --allowlist "$ROOT/data/restricted/allowlist"
@@ -235,8 +235,8 @@ printf '{ "schema": 1, "advisories": {} }\n' >"$from/stable/x86_64/omarchy.advis
   echo "signature not copied" >&2
   exit 1
 }
-[[ -f $to/restricted/x86_64/omarchy.advisories.json ]] || {
-  echo "sidecar not copied" >&2
+[[ -f $to/restricted/x86_64/omarchy-1.0-1-x86_64.advisory.json ]] || {
+  echo "advisory not copied with the allowlisted package" >&2
   exit 1
 }
 [[ ! -e $to/restricted/x86_64/mise-bin-1.0-1-x86_64.pkg.tar.zst ]] || {

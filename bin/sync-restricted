@@ -16,8 +16,8 @@ Usage: $0 --from-root <stable-tree> --to-root <restricted-tree> --arch <arch> --
 
 Copy allowlisted .pkg.tar.zst files and matching .sig files from
 <stable-tree>/stable/<arch>/ into <restricted-tree>/restricted/<arch>/.
-Copies omarchy.advisories.json when present. Exits 1 if an allowlisted
-package file has no .sig.
+Copies each package's .advisory.json and .advisory.json.sig when present.
+Exits 1 if an allowlisted package file has no .sig.
 EOF
 }
 
@@ -122,16 +122,13 @@ while IFS= read -r pkg || [[ -n ${pkg-} ]]; do
       exit 1
     fi
     cp -a "$archive" "$sig" "$dst/"
+    adv="${archive%.pkg.tar.zst}.advisory.json"
+    if [[ -f $adv ]]; then
+      cp -a "$adv" "$dst/"
+      [[ -f $adv.sig ]] && cp -a "$adv.sig" "$dst/"
+    fi
     copied=$((copied + 1))
   done
 done <"$ALLOWLIST"
-
-sidecar="$src/omarchy.advisories.json"
-if [[ -f $sidecar ]]; then
-  cp -a "$sidecar" "$dst/"
-  if [[ -f $sidecar.sig ]]; then
-    cp -a "$sidecar.sig" "$dst/"
-  fi
-fi
 
 echo "copied $copied allowlisted package(s) to $dst"
