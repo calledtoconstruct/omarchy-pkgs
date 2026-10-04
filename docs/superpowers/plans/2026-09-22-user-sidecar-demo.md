@@ -137,7 +137,7 @@ git commit -m "feat: default OSV purl map for advisory fetch"
 
 **Interfaces:**
 - Consumes: `bin/fetch-advisories`, `bin/sync-advisories --no-sign`, `data/opr-purl-map`
-- Produces: a test that leaves `omarchy.advisories.json` next to an unchanged `mise-bin-*.pkg.tar.zst` under a temp `OMARCHY_REPO_ROOT`
+- Produces: a test that leaves `mise-bin-<pkgver>-<pkgrel>-<arch>.advisory.json` next to an unchanged `mise-bin-*.pkg.tar.zst` under a temp `OMARCHY_REPO_ROOT`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -195,15 +195,14 @@ OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
 "$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
   --feed "$work/feed" --no-sign --stale-after 720h
 
-sidecar="$REPO_DIR/omarchy.advisories.json"
-key="mise-bin:2026.9.4-1:x86_64"
-[[ -f $sidecar ]] || { echo "demo must write omarchy.advisories.json" >&2; exit 1; }
-[[ $(jq -r --arg k "$key" '.advisories[$k].scan_status' "$sidecar") == ok ]] || {
-  echo "mise-bin row must be ok" >&2
+sidecar="$REPO_DIR/mise-bin-2026.9.4-1-x86_64.advisory.json"
+[[ -f $sidecar ]] || { echo "demo must write mise-bin-2026.9.4-1-x86_64.advisory.json" >&2; exit 1; }
+[[ $(jq -r '.scan_status' "$sidecar") == ok ]] || {
+  echo "mise-bin advisory must be ok" >&2
   exit 1
 }
-[[ $(jq -r --arg k "$key" '.advisories[$k].cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
-  echo "sidecar must carry the stub CVE" >&2
+[[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
+  echo "advisory must carry the stub CVE" >&2
   exit 1
 }
 [[ $(sha256sum "$REPO_DIR/mise-bin-2026.9.4-1-x86_64.pkg.tar.zst" | awk '{print $1}') == "$pkg_hash" ]] || {

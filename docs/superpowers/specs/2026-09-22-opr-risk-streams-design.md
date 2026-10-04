@@ -6,7 +6,7 @@ This is not an Arch STIG and not a DISA product. Mil/gov work is a GPOS SRG V3R3
 
 ## Shared facts
 
-- Sidecar path: `pkgs.omarchy.org/<channel>/<arch>/omarchy.advisories.json` plus `.sig`
+- Sidecar path: `pkgs.omarchy.org/<channel>/<arch>/<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json` plus `.sig`, beside the package archive
 - Identity key: `pkgname:pkgver-pkgrel:arch`
 - Schema v1 fields already on `feat/opr-advisory-rfc-gaps`: `cve_ids`, `cve_max_severity`, `severity_scale`, `advisory_as_of`, `scanned_at`, `scan_source`, `scan_status` in `ok|stale|missing|error`
 - No `safety_score`. No capability tags. OPR ingests OSV; it does not scan package bits
