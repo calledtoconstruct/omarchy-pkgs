@@ -107,11 +107,11 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 
 ### Local mini OPR
 
-`tests/demo-local-opr.sh` builds one channel, `edge`, and one arch, `x86_64`. It reads `data/opr-purl-map`, skips comments and `opr-purl-map-canary`, and takes `pkgver` and `pkgrel` from `/home/joseph/code/omarchy-pkgs/pkgbuilds/<pkgname>/PKGBUILD` when that directory exists. Otherwise it reads `pkgbuilds/` in the checkout. A package is included only when the last top-level `pkgver=` and `pkgrel=` are plain values. On the machine that wrote `/tmp/opr-local-demo`, that join included 74 packages.
+`tests/demo-local-opr.sh` builds one channel, `edge`, and one arch, `x86_64`, for every `pkgbuilds/<pkgname>/PKGBUILD` in this checkout whose last top-level `pkgver=` and `pkgrel=` are plain values. That set is more than 100 packages. Names listed in `data/opr-purl-map` (except `opr-purl-map-canary`) get `scan_status` `ok` from the OSV stub. Every other included package gets `scan_status` `missing`, which is what `sync-advisories` writes when ingest has no feed file. Packages whose `pkgver` or `pkgrel` is not a plain value are skipped.
 
 The script does not call the network, does not sign, and does not rebuild packages. Docker is not required. It needs `bash`, `jq`, `tar`, and `python`. A stub `curl` answers OSV. `bin/fetch-advisories` and `bin/sync-advisories --no-sign` then write `<pkgname>-<pkgver>-<pkgrel>-x86_64.advisory.json` beside each archive and leave the archive bytes unchanged. A successful run replaces `/tmp/opr-local-demo`. That copy is not part of the git checkout.
 
-The read-only PKGBUILD tree does not contain 100 packages whose GitHub source version slot is `pkgver` and whose `pkgver` and `pkgrel` are plain. Split packages without their own directory, and `rustdesk` because its `pkgver` is not plain, are skipped. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped.
+GitHub `url` values are mapped only when a version slot can take `pkgver`. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped and still receive a `missing` sidecar in this local tree.
 
 ```
 ./tests/demo-local-opr.sh

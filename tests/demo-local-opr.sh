@@ -1,14 +1,11 @@
 #!/bin/bash
-# Local OPR tree for every mapped package with a static pkgver and pkgrel.
-# No live OSV. No signing. Copies the tree to /tmp/opr-local-demo.
+# Local OPR tree for every package whose pkgver and pkgrel are plain values.
+# Mapped packages get an ok sidecar from the OSV stub. Unmapped packages get
+# scan_status missing. No live OSV. No signing. Copies the tree to /tmp/opr-local-demo.
 set -euo pipefail
 
 ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
-if [[ -d /home/joseph/code/omarchy-pkgs/pkgbuilds ]]; then
-  PKGBUILDS=/home/joseph/code/omarchy-pkgs/pkgbuilds
-else
-  PKGBUILDS="$ROOT/pkgbuilds"
-fi
+PKGBUILDS="$ROOT/pkgbuilds"
 MAP="$ROOT/data/opr-purl-map"
 
 work=$(mktemp -d)
@@ -19,6 +16,7 @@ mkdir -p "$OMARCHY_REPO_ROOT/edge/x86_64" "$work/feed" "$work/bin" "$work/db-sta
 REPO_DIR="$OMARCHY_REPO_ROOT/edge/x86_64"
 
 python3 - "$MAP" "$PKGBUILDS" >"$work/rows.tsv" <<'PY'
+import os
 import re
 import sys
 
@@ -88,6 +86,7 @@ def last_assignments(path):
         last[match.group(1)] = value if value is not None else False
     return last
 
+mapped = set()
 for raw in open(map_path):
     line = raw.strip()
     if not line or line.startswith("#"):
@@ -95,12 +94,13 @@ for raw in open(map_path):
     name = line.split(None, 1)[0]
     if name == "opr-purl-map-canary":
         continue
+    mapped.add(name)
+
+for name in sorted(os.listdir(pkgbuilds)):
     path = f"{pkgbuilds}/{name}/PKGBUILD"
-    try:
-        found = last_assignments(path)
-    except FileNotFoundError:
-        print(f"SKIP\t{name}\tno PKGBUILD at {path}")
+    if not os.path.isfile(path):
         continue
+    found = last_assignments(path)
     pkgver = found.get("pkgver")
     pkgrel = found.get("pkgrel")
     if pkgver is None:
@@ -115,19 +115,23 @@ for raw in open(map_path):
     if pkgrel is False:
         print(f"SKIP\t{name}\tpkgrel is not a plain value")
         continue
-    print(f"INCLUDE\t{name}\t{pkgver}\t{pkgrel}")
+    flag = "mapped" if name in mapped else "unmapped"
+    print(f"INCLUDE\t{flag}\t{name}\t{pkgver}\t{pkgrel}")
 PY
 
 declare -A pkg_hash
+declare -A pkg_mapped
 included=0
+mapped_count=0
 skipped=0
-while IFS=$'\t' read -r kind name pkgver pkgrel; do
+while IFS=$'\t' read -r kind mapped name pkgver pkgrel; do
   if [[ $kind == SKIP ]]; then
-    echo "skip $name: $pkgver"
+    echo "skip $mapped: $name"
     skipped=$((skipped + 1))
     continue
   fi
   version="${pkgver}-${pkgrel}"
+  pkg_mapped[$name]=$mapped
   mkdir -p "$work/db-stage/$name"
   cat >"$work/db-stage/$name/desc" <<EOF
 %FILENAME%
@@ -143,11 +147,12 @@ EOF
   printf 'pkg-bytes\n' >"$archive"
   pkg_hash[$name]=$(sha256sum "$archive" | awk '{print $1}')
   included=$((included + 1))
+  [[ $mapped == mapped ]] && mapped_count=$((mapped_count + 1))
 done <"$work/rows.tsv"
 
-echo "included $included packages, skipped $skipped"
-[[ $included -ge 1 ]] || {
-  echo "demo included no packages" >&2
+echo "included $included packages ($mapped_count mapped), skipped $skipped"
+[[ $included -ge 100 ]] || {
+  echo "demo included $included packages; need at least 100" >&2
   exit 1
 }
 
@@ -178,7 +183,8 @@ OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
   --feed "$work/feed" --no-sign --stale-after 720h
 
 json_count=0
-while IFS=$'\t' read -r kind name pkgver pkgrel; do
+ok_count=0
+while IFS=$'\t' read -r kind mapped name pkgver pkgrel; do
   [[ $kind == INCLUDE ]] || continue
   version="${pkgver}-${pkgrel}"
   archive="$REPO_DIR/${name}-${version}-x86_64.pkg.tar.zst"
@@ -187,14 +193,23 @@ while IFS=$'\t' read -r kind name pkgver pkgrel; do
     echo "demo must write ${name}-${version}-x86_64.advisory.json" >&2
     exit 1
   }
-  [[ $(jq -r '.scan_status' "$sidecar") == ok ]] || {
-    echo "$name advisory must be ok" >&2
-    exit 1
-  }
-  [[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
-    echo "$name advisory must carry the stub CVE" >&2
-    exit 1
-  }
+  status=$(jq -r '.scan_status' "$sidecar")
+  if [[ ${pkg_mapped[$name]} == mapped ]]; then
+    [[ $status == ok ]] || {
+      echo "$name advisory must be ok" >&2
+      exit 1
+    }
+    [[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
+      echo "$name advisory must carry the stub CVE" >&2
+      exit 1
+    }
+    ok_count=$((ok_count + 1))
+  else
+    [[ $status == missing ]] || {
+      echo "$name advisory must be missing" >&2
+      exit 1
+    }
+  fi
   [[ $(sha256sum "$archive" | awk '{print $1}') == "${pkg_hash[$name]}" ]] || {
     echo "demo rewrote the $name package archive" >&2
     exit 1
@@ -202,8 +217,16 @@ while IFS=$'\t' read -r kind name pkgver pkgrel; do
   json_count=$((json_count + 1))
 done <"$work/rows.tsv"
 
+[[ $json_count -ge 100 ]] || {
+  echo "advisory count $json_count is below 100" >&2
+  exit 1
+}
 [[ $json_count -eq $included ]] || {
   echo "advisory count $json_count does not match included $included" >&2
+  exit 1
+}
+[[ $ok_count -eq $mapped_count ]] || {
+  echo "ok advisories $ok_count do not match mapped packages $mapped_count" >&2
   exit 1
 }
 if find "$REPO_DIR" -name '*.sig' | grep -q .; then
@@ -216,4 +239,4 @@ rm -rf "$keep"
 mkdir -p "$keep"
 cp -a "$OMARCHY_REPO_ROOT/." "$keep/"
 
-echo "PASS: local mini OPR wrote $json_count sidecars without signing or rebuilding"
+echo "PASS: local OPR wrote $json_count sidecars ($ok_count ok, $((json_count - ok_count)) missing) without signing or rebuilding"
