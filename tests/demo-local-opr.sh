@@ -5,6 +5,11 @@
 # scan_status missing. No live OSV. No signing. Copies the tree to /tmp/opr-local-demo.
 set -euo pipefail
 
+LIVE=0
+if [[ ${1:-} == --live ]]; then
+  LIVE=1
+fi
+
 ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
 PKGBUILDS="$ROOT/pkgbuilds"
 MAP="$ROOT/data/opr-purl-map"
@@ -165,18 +170,36 @@ cat >"$work/osv.json" <<'EOF'
 }
 EOF
 
-cat >"$work/bin/curl" <<'EOF'
+if (( LIVE )); then
+  export OSV_CACHE="$work/osv-cache"
+  mkdir -p "$OSV_CACHE"
+  for repo_arch in "${REPO_ARCHES[@]}"; do
+    "$ROOT/bin/fetch-advisories" --mirror edge --arch "$repo_arch" --feed "$work/feed"
+    "$ROOT/bin/sync-advisories" --mirror edge --arch "$repo_arch" \
+      --feed "$work/feed" --no-sign --stale-after 720h
+  done
+  cache_files=$(find "$OSV_CACHE" -type f | wc -l)
+  [[ $cache_files -gt 0 ]] || {
+    echo "live fetch did not record an OSV response" >&2
+    exit 1
+  }
+  if grep -q 'CVE-2026-4242' "$OSV_CACHE"/*; then
+    echo "live fetch returned the offline stub CVE" >&2
+    exit 1
+  fi
+else
+  cat >"$work/bin/curl" <<'EOF'
 #!/bin/bash
 cat "$OSV_STUB_RESPONSE"
 EOF
-chmod +x "$work/bin/curl"
-
-for repo_arch in "${REPO_ARCHES[@]}"; do
-  OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
-    "$ROOT/bin/fetch-advisories" --mirror edge --arch "$repo_arch" --feed "$work/feed"
-  "$ROOT/bin/sync-advisories" --mirror edge --arch "$repo_arch" \
-    --feed "$work/feed" --no-sign --stale-after 720h
-done
+  chmod +x "$work/bin/curl"
+  for repo_arch in "${REPO_ARCHES[@]}"; do
+    OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
+      "$ROOT/bin/fetch-advisories" --mirror edge --arch "$repo_arch" --feed "$work/feed"
+    "$ROOT/bin/sync-advisories" --mirror edge --arch "$repo_arch" \
+      --feed "$work/feed" --no-sign --stale-after 720h
+  done
+fi
 
 json_count=0
 ok_count=0
@@ -192,15 +215,36 @@ while IFS=$'\t' read -r kind mapped name pkgver pkgrel repo_arch; do
   }
   status=$(jq -r '.scan_status' "$sidecar")
   if [[ ${pkg_mapped[$name]} == mapped ]]; then
-    [[ $status == ok ]] || {
-      echo "$name $repo_arch advisory must be ok" >&2
-      exit 1
-    }
-    [[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
-      echo "$name $repo_arch advisory must carry the stub CVE" >&2
-      exit 1
-    }
-    ok_count=$((ok_count + 1))
+    if (( LIVE )); then
+      [[ $status == ok || $status == missing ]] || {
+        echo "$name $repo_arch live advisory status is $status" >&2
+        exit 1
+      }
+      if [[ $status == ok ]]; then
+        [[ $(jq -r '.scan_source' "$sidecar") == osv.dev ]] || {
+          echo "$name $repo_arch ok sidecar did not come from osv.dev" >&2
+          exit 1
+        }
+        case $(jq -r '.cve_max_severity' "$sidecar") in
+        NONE | LOW | MEDIUM | HIGH | CRITICAL) ;;
+        *)
+          echo "$name $repo_arch severity is not a CVSS band" >&2
+          exit 1
+          ;;
+        esac
+        ok_count=$((ok_count + 1))
+      fi
+    else
+      [[ $status == ok ]] || {
+        echo "$name $repo_arch advisory must be ok" >&2
+        exit 1
+      }
+      [[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
+        echo "$name $repo_arch advisory must carry the stub CVE" >&2
+        exit 1
+      }
+      ok_count=$((ok_count + 1))
+    fi
   else
     [[ $status == missing ]] || {
       echo "$name $repo_arch advisory must be missing" >&2
@@ -218,10 +262,12 @@ done <"$work/rows.tsv"
   echo "advisory count $json_count does not match included $included" >&2
   exit 1
 }
-[[ $ok_count -eq $mapped_count ]] || {
-  echo "ok advisories $ok_count do not match mapped packages $mapped_count" >&2
-  exit 1
-}
+if (( !LIVE )); then
+  [[ $ok_count -eq $mapped_count ]] || {
+    echo "ok advisories $ok_count do not match mapped packages $mapped_count" >&2
+    exit 1
+  }
+fi
 if find "$OMARCHY_REPO_ROOT" -name '*.sig' | grep -q .; then
   echo "demo must not sign advisories" >&2
   exit 1

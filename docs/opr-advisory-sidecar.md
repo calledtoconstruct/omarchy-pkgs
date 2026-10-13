@@ -107,14 +107,15 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 
 ### Local mini OPR
 
-`tests/demo-local-opr.sh` builds the `edge` channel for every package name declared by `pkgbuilds/*/PKGBUILD`, including split packages such as `hyprpm`, `rog-control-center`, the `yaru-*` themes, and kernel headers. It sources each PKGBUILD and publishes the package into `edge/x86_64`, `edge/aarch64`, or both, following that PKGBUILD's `arch`. An `arch=(any)` package is written into both repo directories. Names listed in `data/opr-purl-map` (except `opr-purl-map-canary`) get `scan_status` `ok` from the OSV stub. Every other package gets `scan_status` `missing`, which is what `sync-advisories` writes when ingest has no feed file.
+`tests/demo-local-opr.sh` builds the `edge` channel for every package name declared by `pkgbuilds/*/PKGBUILD`, including split packages such as `hyprpm`, `rog-control-center`, the `yaru-*` themes, and kernel headers. It sources each PKGBUILD and publishes the package into `edge/x86_64`, `edge/aarch64`, or both, following that PKGBUILD's `arch`. An `arch=(any)` package is written into both repo directories. `bin/fetch-advisories` turns `pkg:github/owner/repo@{version}` into an OSV GIT query for `github.com/owner/repo` at that version. When that version has no report and the version does not already start with `v`, it asks again for the `v` tag. CVE tokens are taken from the vuln id, its aliases, and its related ids. The severity band is the CVSS v3 base score (NONE, LOW, MEDIUM, HIGH, CRITICAL). A CVSS v4 vector is banded from its impact metrics: two or more Vulnerable-system High impacts, or a subsequent Safety impact, is CRITICAL; any other High impact is HIGH; only Low impacts is LOW. A text severity on the vuln is used when it is higher. The scale field records CVSSv3 or CVSSv4 for the winning score. A vuln with no score and no label stays LOW. An empty result writes no feed file, and `sync-advisories` records `scan_status` `missing`.
 
-The script does not call the network, does not sign, and does not rebuild packages. Docker is not required. It needs `bash`, `jq`, and `tar`. A stub `curl` answers OSV. `bin/fetch-advisories` and `bin/sync-advisories --no-sign` then write `<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json` beside each archive and leave the archive bytes unchanged. A successful run replaces `/tmp/opr-local-demo`. That copy is not part of the git checkout.
+Names with no purl also stay `missing`. The default `./tests/demo-local-opr.sh` run stubs `curl` so CI does not call the network, and that stub reports `CVE-2026-4242` for every mapped package. `./tests/demo-local-opr.sh --live` uses the real OSV API, caches each query for the second arch, and writes the returned CVEs. It does not sign and does not rebuild packages. Docker is not required. It needs `bash`, `jq`, `tar`, and `curl`. Both runs replace `/tmp/opr-local-demo`. That copy is not part of the git checkout.
 
 GitHub `url` values are mapped only when a version slot can take `pkgver`. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped and still receive a `missing` sidecar in this local tree.
 
 ```
 ./tests/demo-local-opr.sh
+./tests/demo-local-opr.sh --live
 ```
 
 CI runs that script from the existing `archlinux:base-devel` job. The job uses Docker. This script does not.

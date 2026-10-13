@@ -97,8 +97,8 @@ jq -e '.cve_ids | index("CVE-2026-4242")' "$feed_file" >/dev/null || {
   echo "producer must collect CVE ids from OSV aliases" >&2
   exit 1
 }
-[[ $(jq -r '.cve_max_severity' "$feed_file") == HIGH ]] || {
-  echo "CVSS vector with Confidentiality/Integrity/Availability High should map to HIGH" >&2
+[[ $(jq -r '.cve_max_severity' "$feed_file") == CRITICAL ]] || {
+  echo "CVSS 3.1 base score 9.8 should map to CRITICAL, got $(jq -r '.cve_max_severity' "$feed_file")" >&2
   exit 1
 }
 
@@ -120,6 +120,106 @@ pkg_hash=$(sha256sum "$REPO_DIR_TMP/mise-bin-1.0.0-1-x86_64.pkg.tar.zst" | awk '
   echo "producer+ingest rewrote the package archive" >&2
   exit 1
 }
+
+# A 5.3 vector is MEDIUM, and a CURL-CVE id still contributes the CVE token.
+rm -f "$feed_file"
+cat >"$work/osv-medium.json" <<'EOF'
+{
+  "vulns": [
+    {
+      "id": "CURL-CVE-2024-11053",
+      "database_specific": { "severity": "Low" },
+      "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" }]
+    }
+  ]
+}
+EOF
+OSV_STUB_RESPONSE="$work/osv-medium.json" PATH="$work/bin:$PATH" \
+  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 \
+  --feed "$FEED" --purl-map "$work/purls" --package mise-bin >/dev/null
+[[ $(jq -r '.cve_max_severity' "$feed_file") == MEDIUM ]] || {
+  echo "5.3 CVSS vector should outrank a Low label as MEDIUM" >&2
+  exit 1
+}
+jq -e '.cve_ids | index("CVE-2024-11053")' "$feed_file" >/dev/null || {
+  echo "producer must extract CVE ids embedded in OSV vuln ids" >&2
+  exit 1
+}
+
+# CVSS v4 has no v3 score. A Vulnerable-system Availability High vector is HIGH.
+rm -f "$feed_file"
+cat >"$work/osv-v4.json" <<'EOF'
+{
+  "vulns": [
+    {
+      "id": "CVE-2026-76840",
+      "aliases": ["CVE-2026-68579"],
+      "severity": [{ "type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:P/VC:N/VI:N/VA:H/SC:L/SI:H/SA:H" }]
+    }
+  ]
+}
+EOF
+OSV_STUB_RESPONSE="$work/osv-v4.json" PATH="$work/bin:$PATH" \
+  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 \
+  --feed "$FEED" --purl-map "$work/purls" --package mise-bin >/dev/null
+[[ $(jq -r '.cve_max_severity' "$feed_file") == HIGH ]] || {
+  echo "CVSS v4 VA:H should map to HIGH, got $(jq -r '.cve_max_severity' "$feed_file")" >&2
+  exit 1
+}
+[[ $(jq -r '.severity_scale' "$feed_file") == CVSSv4 ]] || {
+  echo "v4-only score should record severity_scale CVSSv4" >&2
+  exit 1
+}
+
+# GitHub advisories are often tagged v<pkgver>. An empty plain-version
+# response must be followed by that tag before the row stays missing.
+rm -f "$feed_file"
+cat >"$work/bin/curl" <<'EOF'
+#!/bin/bash
+body=""
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  if [[ ${args[$i]} == -d || ${args[$i]} == --data || ${args[$i]} == --data-raw ]]; then
+    body=${args[$((i + 1))]}
+  fi
+  i=$((i + 1))
+done
+if [[ $body == *'"version":"v1.0.0"'* ]]; then
+  printf '%s\n' '{"vulns":[{"id":"CVE-2024-21548","severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"}]}]}'
+else
+  printf '%s\n' '{"vulns":[]}'
+fi
+EOF
+chmod +x "$work/bin/curl"
+PATH="$work/bin:$PATH" \
+  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 \
+  --feed "$FEED" --purl-map "$work/purls" --package mise-bin >/dev/null
+[[ -f $feed_file ]] || {
+  echo "empty OSV result for pkgver must retry the v-prefixed git tag" >&2
+  exit 1
+}
+jq -e '.cve_ids | index("CVE-2024-21548")' "$feed_file" >/dev/null || {
+  echo "v-prefixed retry must keep the CVE from that response" >&2
+  exit 1
+}
+
+# Restore the single-response stub for the remaining cases.
+cat >"$work/bin/curl" <<'EOF'
+#!/bin/bash
+if [[ -n ${OSV_STUB_LOG:-} ]]; then
+  args=("$@")
+  i=0
+  while [[ $i -lt ${#args[@]} ]]; do
+    if [[ ${args[$i]} == -d || ${args[$i]} == --data || ${args[$i]} == --data-raw ]]; then
+      printf '%s\n' "${args[$((i + 1))]}" >>"$OSV_STUB_LOG"
+    fi
+    i=$((i + 1))
+  done
+fi
+cat "$OSV_STUB_RESPONSE"
+EOF
+chmod +x "$work/bin/curl"
 
 # Empty vulns means the source has no report yet: do not write a "clean" feed.
 printf '{ "vulns": [] }\n' >"$work/osv-empty.json"
@@ -278,11 +378,23 @@ for case in "${map_cases[@]}"; do
     echo "default purl map must supply $name without --purl-map" >&2
     exit 1
   }
-  posted=$(jq -s -r '.[-1].package.purl' "$OSV_STUB_LOG")
-  [[ $posted == "$want" ]] || {
-    echo "default map purl for $name: got ${posted:-<none>} want $want" >&2
-    exit 1
-  }
+  posted_version=$(jq -s -r '.[-1].version // empty' "$OSV_STUB_LOG")
+  posted_name=$(jq -s -r '.[-1].package.name // empty' "$OSV_STUB_LOG")
+  posted_purl=$(jq -s -r '.[-1].package.purl // empty' "$OSV_STUB_LOG")
+  want_version=${want##*@}
+  want_repo=${want#pkg:github/}
+  want_repo=${want_repo%@*}
+  if [[ -n $posted_purl ]]; then
+    [[ $posted_purl == "$want" ]] || {
+      echo "default map purl for $name: got ${posted_purl:-<none>} want $want" >&2
+      exit 1
+    }
+  else
+    [[ $posted_version == "$want_version" && $posted_name == "github.com/$want_repo" ]] || {
+      echo "default map query for $name: got $posted_name@$posted_version want github.com/$want_repo@$want_version" >&2
+      exit 1
+    }
+  fi
 done
 
 echo "PASS: fetch-advisories writes a version-pinned OSV feed without touching packages"

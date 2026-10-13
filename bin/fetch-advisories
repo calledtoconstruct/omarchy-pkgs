@@ -172,19 +172,140 @@ read_db_manifest() {
   '
 }
 
-cvss_band() {
-  local json="$1"
-  local vector
-  vector=$(jq -r '[.vulns[]?.severity[]? | select(.type == "CVSS_V3") | .score] | first // empty' <<<"$json")
-  if [[ $vector == *C:H* && $vector == *I:H* && $vector == *A:H* ]]; then
-    echo HIGH
-  elif [[ $vector == *:H* ]]; then
-    echo MEDIUM
-  elif jq -e '.vulns | length > 0' <<<"$json" >/dev/null 2>&1; then
-    echo LOW
-  else
-    echo NONE
+# Turn one OSV query body into cve_ids plus the highest severity band.
+# CVSS v3 base scores use the spec bands. A database label can only raise
+# that band. Labels use OSV's words, with MODERATE folded into MEDIUM.
+summarize_osv() {
+  jq -c '
+    def rank:
+      ascii_upcase
+      | if . == "CRITICAL" then 4
+        elif . == "HIGH" then 3
+        elif . == "MEDIUM" or . == "MODERATE" then 2
+        elif . == "LOW" then 1
+        else 0 end;
+    def from_rank:
+      if . >= 4 then "CRITICAL"
+      elif . == 3 then "HIGH"
+      elif . == 2 then "MEDIUM"
+      elif . == 1 then "LOW"
+      else "NONE" end;
+    def band($n):
+      if $n <= 0 then 0
+      elif $n < 4 then 1
+      elif $n < 7 then 2
+      elif $n < 9 then 3
+      else 4 end;
+    def roundup:
+      ((. * 10) + 0.0000001) | (if . == floor then . else (. | floor) + 1 end) / 10;
+    def cvss3($vector):
+      (if ($vector | startswith("CVSS:3.")) then
+        ($vector | split("/") | map(select(contains(":"))) | map(split(":")) | map({key: .[0], value: .[1]}) | from_entries)
+      else {} end) as $m
+      | if (["AV","AC","PR","UI","S","C","I","A"] - ($m | keys)) != [] then null
+      else
+        {"N":0, "L":0.22, "H":0.56} as $cia
+        | {"N":0.85, "A":0.62, "L":0.55, "P":0.20} as $av
+        | {"L":0.77, "H":0.44} as $ac
+        | {"N":0.85, "R":0.62} as $ui
+        | (if $m.S == "C" then {"N":0.85, "L":0.68, "H":0.50} else {"N":0.85, "L":0.62, "H":0.27} end) as $pr
+        | (1 - ((1 - $cia[$m.C]) * (1 - $cia[$m.I]) * (1 - $cia[$m.A]))) as $iss
+        | (if $m.S == "C" then
+            (7.52 * ($iss - 0.029)) - (3.25 * (($iss - 0.02) | pow(.; 15)))
+          else
+            6.42 * $iss
+          end) as $impact
+        | (8.22 * $av[$m.AV] * $ac[$m.AC] * $pr[$m.PR] * $ui[$m.UI]) as $exploit
+        | if $impact <= 0 then 0
+          elif $m.S == "C" then ([1.08 * ($impact + $exploit), 10] | min | roundup)
+          else ([$impact + $exploit, 10] | min | roundup)
+          end
+      end;
+    def cve_token:
+      tostring
+      | if test("CVE-[0-9]{4}-[0-9]+") then match("CVE-[0-9]{4}-[0-9]+").string else empty end;
+    def labels:
+      [ .[]?.database_specific.severity?, .[]?.ecosystem_specific.severity?
+        | strings | select(rank > 0) | rank ];
+    def metric_map($vector):
+      if ($vector | startswith("CVSS:")) then
+        ($vector | split("/") | map(select(contains(":"))) | map(split(":")) | map({key: .[0], value: .[1]}) | from_entries)
+      else {} end;
+    def v4rank($vector):
+      metric_map($vector) as $m
+      | if (["VC","VI","VA","SC","SI","SA"] - ($m | keys)) != [] then 0
+        else
+          [$m.VC, $m.VI, $m.VA, $m.SC, $m.SI, $m.SA] as $impact
+          | ([$m.VC, $m.VI, $m.VA] | map(select(. == "H")) | length) as $vulnerable_high
+          | if ($m.SI == "S" or $m.SA == "S" or $vulnerable_high >= 2) then 4
+            elif ($impact | index("H")) != null then 3
+            elif ($impact | index("L")) != null then 1
+            else 0 end
+        end;
+    def v3ranks:
+      [ .[]?.severity[]?
+        | select((.type // "") | startswith("CVSS_V3"))
+        | .score
+        | cvss3(.)
+        | select(. != null)
+        | band(.) ];
+    def v4ranks:
+      [ .[]?.severity[]?
+        | select((.type // "") | startswith("CVSS_V4"))
+        | .score
+        | v4rank(.) ];
+    . as $doc
+    | ([($doc.vulns // []) | labels[]] | max // 0) as $label
+    | ([($doc.vulns // []) | v3ranks[]] | max // 0) as $v3
+    | ([($doc.vulns // []) | v4ranks[]] | max // 0) as $v4
+    | ([$label, $v3, $v4] | max) as $best
+    | (if (($doc.vulns // []) | length) > 0 and $best == 0 then 1 else $best end) as $rank
+    | (if $v4 > $v3 and $v4 >= $label and $v4 > 0 then "CVSSv4" else "CVSSv3" end) as $scale
+    | {
+        cve_ids: [ ($doc.vulns // [])[]? | (.id, .aliases[]?, .related[]?) | cve_token ] | unique,
+        severity: ($rank | from_rank),
+        scale: $scale
+      }
+  ' <<<"$1"
+}
+
+osv_has_vulns() {
+  jq -e '(.vulns | type == "array") and (.vulns | length > 0)' <<<"$1" >/dev/null 2>&1
+}
+
+# pkg:github/owner/repo@version becomes the GIT ecosystem query OSV indexes.
+# Other purls stay on the purl query.
+osv_query_body() {
+  local purl=$1 version_override=${2:-}
+  if [[ $purl =~ ^pkg:github/([^/@]+)/([^@]+)@(.+)$ ]]; then
+    local version=${version_override:-${BASH_REMATCH[3]}}
+    local name="github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    jq -nc --arg version "$version" --arg name "$name" \
+      '{version:$version, package:{ecosystem:"GIT", name:$name}}'
+    return 0
   fi
+  jq -nc --arg purl "$purl" '{package:{purl:$purl}}'
+}
+
+osv_post() {
+  local body=$1
+  local cache_key="" cache_file="" response
+  if [[ -n ${OSV_CACHE:-} ]]; then
+    cache_key=$(printf '%s' "$body" | sha256sum | awk '{print $1}')
+    cache_file="$OSV_CACHE/$cache_key"
+    if [[ -f $cache_file ]]; then
+      cat "$cache_file"
+      return 0
+    fi
+  fi
+  if ! response=$(curl -fsS -X POST "$OSV_API" -H 'Content-Type: application/json' -d "$body"); then
+    return 1
+  fi
+  if [[ -n ${OSV_CACHE:-} ]]; then
+    mkdir -p "$OSV_CACHE"
+    printf '%s\n' "$response" >"$cache_file"
+  fi
+  printf '%s\n' "$response"
 }
 
 NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -205,8 +326,8 @@ while IFS=$'\t' read -r name version db_arch filename; do
     continue
   fi
 
-  body=$(jq -n --arg purl "$purl" '{package:{purl:$purl}}')
-  if ! response=$(curl -fsS -X POST "$OSV_API" -H 'Content-Type: application/json' -d "$body"); then
+  body=$(osv_query_body "$purl")
+  if ! response=$(osv_post "$body"); then
     print_warning "OSV query failed for $name $pkgver; leaving feed missing"
     skipped=$((skipped + 1))
     continue
@@ -217,24 +338,35 @@ while IFS=$'\t' read -r name version db_arch filename; do
     continue
   fi
 
+  # Git tags are often v<pkgver>. Retry that form only when the plain
+  # version has no report, and keep the plain result when the tag is empty.
+  if ! osv_has_vulns "$response" && [[ $purl =~ ^pkg:github/([^/@]+)/([^@]+)@([^v].*)$ ]]; then
+    alt_body=$(osv_query_body "$purl" "v${BASH_REMATCH[3]}")
+    if alt_response=$(osv_post "$alt_body") && osv_has_vulns "$alt_response"; then
+      response=$alt_response
+    fi
+  fi
+
   # Empty vulns: the source has no report for this version yet (OPR often
   # ships first). Do not write a clean feed; ingest will mark the row missing.
-  if ! jq -e '(.vulns | type == "array") and (.vulns | length > 0)' <<<"$response" >/dev/null; then
+  if ! osv_has_vulns "$response"; then
     print_info "OSV has no report for $name $pkgver; leaving feed missing"
     skipped=$((skipped + 1))
     continue
   fi
 
-  cve_ids=$(jq -c '[.vulns[]? | (.id, (.aliases[]? // empty)) | select(startswith("CVE-"))] | unique' <<<"$response")
-  severity=$(cvss_band "$response")
+  summary=$(summarize_osv "$response")
+  cve_ids=$(jq -c '.cve_ids' <<<"$summary")
+  severity=$(jq -r '.severity' <<<"$summary")
+  scale=$(jq -r '.scale' <<<"$summary")
   dest=$(advisory_feed_path "$FEED_DIR" "$name" "$pkgver" "$pkgrel" "$ARCH")
   mkdir -p "$(dirname "$dest")"
   jq -n --arg name "$name" --arg pkgver "$pkgver" --arg pkgrel "$pkgrel" --arg arch "$ARCH" \
-    --argjson cve_ids "$cve_ids" --arg severity "$severity" --arg now "$NOW_UTC" \
+    --argjson cve_ids "$cve_ids" --arg severity "$severity" --arg scale "$scale" --arg now "$NOW_UTC" \
     '{
       pkgname: $name, pkgver: $pkgver, pkgrel: $pkgrel, arch: $arch,
       cve_ids: $cve_ids,
-      cve_max_severity: $severity, severity_scale: "CVSSv3",
+      cve_max_severity: $severity, severity_scale: $scale,
       advisory_as_of: $now, scanned_at: $now,
       scan_source: "osv.dev", note: ""
     }' >"$dest"
