@@ -175,6 +175,8 @@ read_db_manifest() {
 # Turn one OSV query body into cve_ids plus the highest severity band.
 # CVSS v3 base scores use the spec bands. A database label can only raise
 # that band. Labels use OSV's words, with MODERATE folded into MEDIUM.
+# A CVSS v4 vector is banded from its impact metrics. That scale is
+# CVSSv4-impact. It is not a FIRST CVSS v4.0 base score.
 summarize_osv() {
   jq -c '
     def rank:
@@ -260,7 +262,7 @@ summarize_osv() {
     | ([($doc.vulns // []) | v4ranks[]] | max // 0) as $v4
     | ([$label, $v3, $v4] | max) as $best
     | (if (($doc.vulns // []) | length) > 0 and $best == 0 then 1 else $best end) as $rank
-    | (if $v4 > $v3 and $v4 >= $label and $v4 > 0 then "CVSSv4" else "CVSSv3" end) as $scale
+    | (if $v4 > $v3 and $v4 >= $label and $v4 > 0 then "CVSSv4-impact" else "CVSSv3" end) as $scale
     | {
         cve_ids: [ ($doc.vulns // [])[]? | (.id, .aliases[]?, .related[]?) | cve_token ] | unique,
         severity: ($rank | from_rank),

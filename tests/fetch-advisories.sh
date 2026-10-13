@@ -166,8 +166,8 @@ OSV_STUB_RESPONSE="$work/osv-v4.json" PATH="$work/bin:$PATH" \
   echo "CVSS v4 VA:H should map to HIGH, got $(jq -r '.cve_max_severity' "$feed_file")" >&2
   exit 1
 }
-[[ $(jq -r '.severity_scale' "$feed_file") == CVSSv4 ]] || {
-  echo "v4-only score should record severity_scale CVSSv4" >&2
+[[ $(jq -r '.severity_scale' "$feed_file") == CVSSv4-impact ]] || {
+  echo "v4-only score should record severity_scale CVSSv4-impact" >&2
   exit 1
 }
 

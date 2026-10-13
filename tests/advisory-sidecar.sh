@@ -18,6 +18,10 @@
 
 set -euo pipefail
 
+# The ok cases use a timestamp from this run. A fixed September date falls
+# outside the 720h window and would be marked stale.
+FRESH=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
 ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -89,7 +93,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-0001", "CVE-2026-0002"],
   "cve_max_severity": "HIGH",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-10T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -160,7 +164,7 @@ write_feed mise-bin 9.9.9 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-9999"],
   "cve_max_severity": "CRITICAL",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-11T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -186,7 +190,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-0001", "CVE-2026-0002"],
   "cve_max_severity": "HIGH",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-10T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -201,7 +205,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-0001", "CVE-2026-0002", "CVE-2026-0003"],
   "cve_max_severity": "CRITICAL",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-11T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -271,7 +275,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-0001"],
   "cve_max_severity": "HIGH",
   "severity_scale": "",
-  "advisory_as_of": "2026-09-11T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -293,7 +297,7 @@ write_feed mise-bin 1.0.0 1 x86_64 <<EOF
   "cve_ids": [],
   "cve_max_severity": "NONE",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-11T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
@@ -329,7 +333,7 @@ write_feed mise-bin 2.0.0 1 x86_64 <<EOF
   "cve_ids": ["CVE-2026-2000"],
   "cve_max_severity": "LOW",
   "severity_scale": "CVSSv3",
-  "advisory_as_of": "2026-09-11T00:00:00Z",
+  "advisory_as_of": "$FRESH",
   "scan_source": "osv.dev"
 }
 EOF
