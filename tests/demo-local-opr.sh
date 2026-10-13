@@ -1,5 +1,6 @@
 #!/bin/bash
-# Local OPR tree for every package whose pkgver and pkgrel are plain values.
+# Local OPR tree for every package name declared by pkgbuilds/*/PKGBUILD,
+# including split packages, on each arch that package publishes.
 # Mapped packages get an ok sidecar from the OSV stub. Unmapped packages get
 # scan_status missing. No live OSV. No signing. Copies the tree to /tmp/opr-local-demo.
 set -euo pipefail
@@ -7,6 +8,7 @@ set -euo pipefail
 ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
 PKGBUILDS="$ROOT/pkgbuilds"
 MAP="$ROOT/data/opr-purl-map"
+REPO_ARCHES=(x86_64 aarch64)
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -15,148 +17,141 @@ export OMARCHY_REPO_ROOT="$work/repo"
 mkdir -p "$OMARCHY_REPO_ROOT/edge/x86_64" "$work/feed" "$work/bin" "$work/db-stage"
 REPO_DIR="$OMARCHY_REPO_ROOT/edge/x86_64"
 
-python3 - "$MAP" "$PKGBUILDS" >"$work/rows.tsv" <<'PY'
-import os
-import re
-import sys
+declare -A in_map=()
+while IFS= read -r line || [[ -n $line ]]; do
+  [[ -z $line || $line == \#* ]] && continue
+  map_name=${line%% *}
+  [[ $map_name == opr-purl-map-canary ]] && continue
+  in_map[$map_name]=1
+done <"$MAP"
 
-map_path, pkgbuilds = sys.argv[1], sys.argv[2]
+: >"$work/packages.tsv"
+pkgbuild_count=0
+shopt -s nullglob
+for pkgbuild in "$PKGBUILDS"/*/PKGBUILD; do
+  pkgbuild_count=$((pkgbuild_count + 1))
+  if ! bash --noprofile --norc -c '
+    set -eo pipefail
+    shopt -s extglob nullglob
+    source "$1"
+    [[ -n ${pkgver:-} && -n ${pkgrel:-} && -n ${pkgname:-} ]] || exit 3
+    if [[ $(declare -p arch) == declare\ -a* ]]; then
+      arch_words="${arch[*]}"
+    else
+      arch_words="${arch}"
+    fi
+    [[ -n $arch_words ]] || exit 4
+    emit() {
+      printf "PKG\t%s\t%s\t%s\t%s\n" "$1" "$pkgver" "$pkgrel" "$arch_words"
+    }
+    if [[ $(declare -p pkgname) == declare\ -a* ]]; then
+      [[ ${#pkgname[@]} -gt 0 ]] || exit 5
+      for pkg_name in "${pkgname[@]}"; do
+        [[ -n $pkg_name ]] || exit 5
+        emit "$pkg_name"
+      done
+    else
+      emit "$pkgname"
+    fi
+  ' _ "$pkgbuild" >>"$work/packages.tsv"; then
+    echo "demo could not read package names from $pkgbuild" >&2
+    exit 1
+  fi
+done
+shopt -u nullglob
 
-def strip_comment(line):
-    out = []
-    quote = None
-    i = 0
-    while i < len(line):
-        char = line[i]
-        if quote:
-            out.append(char)
-            if char == "\\" and quote == '"':
-                if i + 1 < len(line):
-                    i += 1
-                    out.append(line[i])
-            elif char == quote:
-                quote = None
-        elif char in "\"'":
-            quote = char
-            out.append(char)
-        elif char == "#":
-            break
-        else:
-            out.append(char)
-        i += 1
-    return "".join(out)
+[[ $pkgbuild_count -gt 0 ]] || {
+  echo "demo found no PKGBUILDs in $PKGBUILDS" >&2
+  exit 1
+}
 
-def plain_value(raw):
-    raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        inner = raw[1:-1]
-    else:
-        inner = raw
-    if "$" in raw or "`" in raw or not re.fullmatch(r"[A-Za-z0-9._+:~]+", inner):
-        return None
-    return inner
+publishes_for() {
+  local want=$1 words=$2 word
+  for word in $words; do
+    [[ $word == any || $word == "$want" ]] && return 0
+  done
+  return 1
+}
 
-def last_assignments(path):
-    last = {}
-    in_func = False
-    depth = 0
-    opened = False
-    for raw in open(path, errors="replace"):
-        line = strip_comment(raw).strip()
-        if not line:
-            continue
-        if in_func:
-            depth += line.count("{") - line.count("}")
-            if "{" in line:
-                opened = True
-            if opened and depth <= 0:
-                in_func = False
-            continue
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)", line):
-            in_func = True
-            depth = line.count("{") - line.count("}")
-            opened = "{" in line
-            if opened and depth <= 0:
-                in_func = False
-            continue
-        match = re.match(r"^(pkgver|pkgrel)\s*=\s*(.*)$", line)
-        if not match:
-            continue
-        value = plain_value(match.group(2))
-        last[match.group(1)] = value if value is not None else False
-    return last
-
-mapped = set()
-for raw in open(map_path):
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    name = line.split(None, 1)[0]
-    if name == "opr-purl-map-canary":
-        continue
-    mapped.add(name)
-
-for name in sorted(os.listdir(pkgbuilds)):
-    path = f"{pkgbuilds}/{name}/PKGBUILD"
-    if not os.path.isfile(path):
-        continue
-    found = last_assignments(path)
-    pkgver = found.get("pkgver")
-    pkgrel = found.get("pkgrel")
-    if pkgver is None:
-        print(f"SKIP\t{name}\tpkgver missing")
-        continue
-    if pkgver is False:
-        print(f"SKIP\t{name}\tpkgver is not a plain value")
-        continue
-    if pkgrel is None:
-        print(f"SKIP\t{name}\tpkgrel missing")
-        continue
-    if pkgrel is False:
-        print(f"SKIP\t{name}\tpkgrel is not a plain value")
-        continue
-    flag = "mapped" if name in mapped else "unmapped"
-    print(f"INCLUDE\t{flag}\t{name}\t{pkgver}\t{pkgrel}")
-PY
-
+: >"$work/rows.tsv"
 declare -A pkg_hash
 declare -A pkg_mapped
+declare -A expected_name
+declare -A seen_name
 included=0
 mapped_count=0
-skipped=0
-while IFS=$'\t' read -r kind mapped name pkgver pkgrel; do
-  if [[ $kind == SKIP ]]; then
-    echo "skip $mapped: $name"
-    skipped=$((skipped + 1))
-    continue
+name_count=0
+
+while IFS=$'\t' read -r kind name pkgver pkgrel arch_words; do
+  [[ $kind == PKG ]] || continue
+  if [[ -z ${expected_name[$name]:-} ]]; then
+    expected_name[$name]=1
+    name_count=$((name_count + 1))
   fi
+  flag=unmapped
+  [[ -n ${in_map[$name]:-} ]] && flag=mapped
+  pkg_mapped[$name]=$flag
   version="${pkgver}-${pkgrel}"
-  pkg_mapped[$name]=$mapped
-  mkdir -p "$work/db-stage/$name"
-  cat >"$work/db-stage/$name/desc" <<EOF
+  published=0
+  for repo_arch in "${REPO_ARCHES[@]}"; do
+    publishes_for "$repo_arch" "$arch_words" || continue
+    published=1
+    seen_name[$name]=1
+    repo_dir="$OMARCHY_REPO_ROOT/edge/$repo_arch"
+    stage="$work/db-stage/$repo_arch"
+    mkdir -p "$repo_dir" "$stage/$name"
+    cat >"$stage/$name/desc" <<EOF
 %FILENAME%
-${name}-${version}-x86_64.pkg.tar.zst
+${name}-${version}-${repo_arch}.pkg.tar.zst
 %NAME%
 ${name}
 %VERSION%
 ${version}
 %ARCH%
-x86_64
+${repo_arch}
 EOF
-  archive="$REPO_DIR/${name}-${version}-x86_64.pkg.tar.zst"
-  printf 'pkg-bytes\n' >"$archive"
-  pkg_hash[$name]=$(sha256sum "$archive" | awk '{print $1}')
-  included=$((included + 1))
-  [[ $mapped == mapped ]] && mapped_count=$((mapped_count + 1))
-done <"$work/rows.tsv"
+    archive="$repo_dir/${name}-${version}-${repo_arch}.pkg.tar.zst"
+    printf 'pkg-bytes\n' >"$archive"
+    pkg_hash["$repo_arch/$name"]=$(sha256sum "$archive" | awk '{print $1}')
+    printf 'INCLUDE\t%s\t%s\t%s\t%s\t%s\n' "$flag" "$name" "$pkgver" "$pkgrel" "$repo_arch" >>"$work/rows.tsv"
+    included=$((included + 1))
+    [[ $flag == mapped ]] && mapped_count=$((mapped_count + 1))
+  done
+  [[ $published -eq 1 ]] || {
+    echo "demo has no edge repo for $name (arch: $arch_words)" >&2
+    exit 1
+  }
+done <"$work/packages.tsv"
 
-echo "included $included packages ($mapped_count mapped), skipped $skipped"
-[[ $included -ge 100 ]] || {
-  echo "demo included $included packages; need at least 100" >&2
+for map_name in "${!in_map[@]}"; do
+  [[ -n ${seen_name[$map_name]:-} ]] || {
+    echo "purl map package $map_name is not in the local tree" >&2
+    exit 1
+  }
+done
+
+[[ $name_count -eq ${#seen_name[@]} ]] || {
+  echo "local tree names ${#seen_name[@]} do not match PKGBUILD names $name_count" >&2
   exit 1
 }
 
-tar -C "$work/db-stage" -cf "$REPO_DIR/omarchy.db.tar.zst" .
+for required in hyprpm rog-control-center caja-open-any-terminal yaru-gtk-theme \
+  linux-omarchy-headers libretro-vice-x64-git dotnet-sdk-bin ghostty-terminfo; do
+  [[ -n ${seen_name[$required]:-} ]] || {
+    echo "local tree is missing split package $required" >&2
+    exit 1
+  }
+done
+
+echo "included $name_count packages as $included artifacts ($mapped_count mapped), from $pkgbuild_count PKGBUILDs"
+[[ $name_count -ge $pkgbuild_count ]] || {
+  echo "package names $name_count are fewer than PKGBUILDs $pkgbuild_count" >&2
+  exit 1
+}
+
+for repo_arch in "${REPO_ARCHES[@]}"; do
+  tar -C "$work/db-stage/$repo_arch" -cf "$OMARCHY_REPO_ROOT/edge/$repo_arch/omarchy.db.tar.zst" .
+done
 
 cat >"$work/osv.json" <<'EOF'
 {
@@ -176,51 +171,49 @@ cat "$OSV_STUB_RESPONSE"
 EOF
 chmod +x "$work/bin/curl"
 
-OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
-  "$ROOT/bin/fetch-advisories" --mirror edge --arch x86_64 --feed "$work/feed"
-
-"$ROOT/bin/sync-advisories" --mirror edge --arch x86_64 \
-  --feed "$work/feed" --no-sign --stale-after 720h
+for repo_arch in "${REPO_ARCHES[@]}"; do
+  OSV_STUB_RESPONSE="$work/osv.json" PATH="$work/bin:$PATH" \
+    "$ROOT/bin/fetch-advisories" --mirror edge --arch "$repo_arch" --feed "$work/feed"
+  "$ROOT/bin/sync-advisories" --mirror edge --arch "$repo_arch" \
+    --feed "$work/feed" --no-sign --stale-after 720h
+done
 
 json_count=0
 ok_count=0
-while IFS=$'\t' read -r kind mapped name pkgver pkgrel; do
+while IFS=$'\t' read -r kind mapped name pkgver pkgrel repo_arch; do
   [[ $kind == INCLUDE ]] || continue
   version="${pkgver}-${pkgrel}"
-  archive="$REPO_DIR/${name}-${version}-x86_64.pkg.tar.zst"
-  sidecar="$REPO_DIR/${name}-${version}-x86_64.advisory.json"
+  repo_dir="$OMARCHY_REPO_ROOT/edge/$repo_arch"
+  archive="$repo_dir/${name}-${version}-${repo_arch}.pkg.tar.zst"
+  sidecar="$repo_dir/${name}-${version}-${repo_arch}.advisory.json"
   [[ -f $sidecar ]] || {
-    echo "demo must write ${name}-${version}-x86_64.advisory.json" >&2
+    echo "demo must write ${repo_arch}/${name}-${version}-${repo_arch}.advisory.json" >&2
     exit 1
   }
   status=$(jq -r '.scan_status' "$sidecar")
   if [[ ${pkg_mapped[$name]} == mapped ]]; then
     [[ $status == ok ]] || {
-      echo "$name advisory must be ok" >&2
+      echo "$name $repo_arch advisory must be ok" >&2
       exit 1
     }
     [[ $(jq -r '.cve_ids[0]' "$sidecar") == CVE-2026-4242 ]] || {
-      echo "$name advisory must carry the stub CVE" >&2
+      echo "$name $repo_arch advisory must carry the stub CVE" >&2
       exit 1
     }
     ok_count=$((ok_count + 1))
   else
     [[ $status == missing ]] || {
-      echo "$name advisory must be missing" >&2
+      echo "$name $repo_arch advisory must be missing" >&2
       exit 1
     }
   fi
-  [[ $(sha256sum "$archive" | awk '{print $1}') == "${pkg_hash[$name]}" ]] || {
-    echo "demo rewrote the $name package archive" >&2
+  [[ $(sha256sum "$archive" | awk '{print $1}') == "${pkg_hash[$repo_arch/$name]}" ]] || {
+    echo "demo rewrote the $name $repo_arch package archive" >&2
     exit 1
   }
   json_count=$((json_count + 1))
 done <"$work/rows.tsv"
 
-[[ $json_count -ge 100 ]] || {
-  echo "advisory count $json_count is below 100" >&2
-  exit 1
-}
 [[ $json_count -eq $included ]] || {
   echo "advisory count $json_count does not match included $included" >&2
   exit 1
@@ -229,7 +222,7 @@ done <"$work/rows.tsv"
   echo "ok advisories $ok_count do not match mapped packages $mapped_count" >&2
   exit 1
 }
-if find "$REPO_DIR" -name '*.sig' | grep -q .; then
+if find "$OMARCHY_REPO_ROOT" -name '*.sig' | grep -q .; then
   echo "demo must not sign advisories" >&2
   exit 1
 fi
@@ -239,4 +232,4 @@ rm -rf "$keep"
 mkdir -p "$keep"
 cp -a "$OMARCHY_REPO_ROOT/." "$keep/"
 
-echo "PASS: local OPR wrote $json_count sidecars ($ok_count ok, $((json_count - ok_count)) missing) without signing or rebuilding"
+echo "PASS: local OPR wrote $json_count sidecars for $name_count packages ($ok_count ok, $((json_count - ok_count)) missing) without signing or rebuilding"
