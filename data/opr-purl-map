@@ -34,6 +34,7 @@ elephant-todo pkg:github/abenz1267/elephant@{version}
 elephant-unicode pkg:github/abenz1267/elephant@{version}
 elephant-websearch pkg:github/abenz1267/elephant@{version}
 flea pkg:github/thisisgm/flea@{version}
+github-copilot-cli pkg:github/github/copilot-cli@{version}
 herdr pkg:github/herdrdev/herdr@{version}
 hermes-desktop pkg:github/NousResearch/hermes-agent@{version}
 heroic-games-launcher-bin pkg:github/Heroic-Games-Launcher/HeroicGamesLauncher@{version}
@@ -41,6 +42,7 @@ hyprland pkg:github/hyprwm/Hyprland@{version}
 hyprland-guiutils pkg:github/hyprwm/hyprland-guiutils@{version}
 hyprland-preview-share-picker pkg:github/WhySoBad/hyprland-preview-share-picker@{version}
 hyprpm pkg:github/hyprwm/Hyprland@{version}
+hyprshade pkg:github/loqusion/hyprshade@{version}
 hyprtoolkit pkg:github/hyprwm/hyprtoolkit@{version}
 link-studio pkg:github/jweaver60/link-studio@{version}
 localsend pkg:github/localsend/localsend@{version}
@@ -51,6 +53,7 @@ omacalc pkg:github/omacom-io/omacalc@{version}
 omacut pkg:github/omacom-io/omacut@{version}
 omakade pkg:github/btsouth/omakade@{version}
 omapresent pkg:github/jethrojones/omapresent@{version}
+omarchy-audio-tuner pkg:github/omacom-io/omarchy-audio-tuner@{version}
 omarchy-emacs pkg:github/scottjones/omarchy-emacs@{version}
 omarchy-fish pkg:github/omacom-io/omarchy-fish@{version}
 omarchy-zsh pkg:github/omacom-io/omarchy-zsh@{version}

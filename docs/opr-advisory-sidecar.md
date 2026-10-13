@@ -107,25 +107,17 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 
 ### Local mini OPR
 
-One channel (`edge`), one arch (`x86_64`), three packages (`mise-bin`,
-`yay`, `walker`). No live OSV, no signing, no package rebuild. Default
-map is `data/opr-purl-map`. Each package archive is left untouched, with
-`<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json` beside it. A successful
-run also copies that tree to `/tmp/opr-local-demo` (not part of the git
-checkout).
+`tests/demo-local-opr.sh` builds one channel, `edge`, and one arch, `x86_64`. It reads `data/opr-purl-map`, skips comments and `opr-purl-map-canary`, and takes `pkgver` and `pkgrel` from `/home/joseph/code/omarchy-pkgs/pkgbuilds/<pkgname>/PKGBUILD` when that directory exists. Otherwise it reads `pkgbuilds/` in the checkout. A package is included only when the last top-level `pkgver=` and `pkgrel=` are plain values. On the machine that wrote `/tmp/opr-local-demo`, that join included 74 packages.
+
+The script does not call the network, does not sign, and does not rebuild packages. Docker is not required. It needs `bash`, `jq`, `tar`, and `python`. A stub `curl` answers OSV. `bin/fetch-advisories` and `bin/sync-advisories --no-sign` then write `<pkgname>-<pkgver>-<pkgrel>-x86_64.advisory.json` beside each archive and leave the archive bytes unchanged. A successful run replaces `/tmp/opr-local-demo`. That copy is not part of the git checkout.
+
+The read-only PKGBUILD tree does not contain 100 packages whose GitHub source version slot is `pkgver` and whose `pkgver` and `pkgrel` are plain. Split packages without their own directory, and `rustdesk` because its `pkgver` is not plain, are skipped. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped.
 
 ```
-# from a checkout, no production host
 ./tests/demo-local-opr.sh
 ```
 
-CI runs that script inside `archlinux:base-devel`. On the machine that
-produced this tree, `/usr/bin/docker` is installed but `docker info`
-failed with permission denied on `/var/run/docker.sock` (the user is
-not in the `docker` group). The socket was not changed and sudo was
-not used, so the container could not start. The same demo was run with
-host `bash`, `jq`, `tar`, and `python`, OSV stubbed and `--no-sign`,
-which wrote `/tmp/opr-local-demo`.
+CI runs that script from the existing `archlinux:base-devel` job. The job uses Docker. This script does not.
 
 Feed input is one JSON file per published artifact
 (`<feed>/<pkgname>/<pkgver>-<pkgrel>/<arch>.json`) with `pkgname`,
