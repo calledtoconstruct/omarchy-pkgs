@@ -107,14 +107,25 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 
 ### Local mini OPR
 
-One channel (`edge`), one arch (`x86_64`), one package (`mise-bin`).
-No live OSV, no signing, no package rebuild. Default map is
-`data/opr-purl-map`.
+One channel (`edge`), one arch (`x86_64`), three packages (`mise-bin`,
+`yay`, `walker`). No live OSV, no signing, no package rebuild. Default
+map is `data/opr-purl-map`. Each package archive is left untouched, with
+`<pkgname>-<pkgver>-<pkgrel>-<arch>.advisory.json` beside it. A successful
+run also copies that tree to `/tmp/opr-local-demo` (not part of the git
+checkout).
 
 ```
 # from a checkout, no production host
-OMARCHY_REPO_ROOT=/tmp/mini-opr ./tests/demo-local-opr.sh
+./tests/demo-local-opr.sh
 ```
+
+CI runs that script inside `archlinux:base-devel`. On the machine that
+produced this tree, `/usr/bin/docker` is installed but `docker info`
+failed with permission denied on `/var/run/docker.sock` (the user is
+not in the `docker` group). The socket was not changed and sudo was
+not used, so the container could not start. The same demo was run with
+host `bash`, `jq`, `tar`, and `python`, OSV stubbed and `--no-sign`,
+which wrote `/tmp/opr-local-demo`.
 
 Feed input is one JSON file per published artifact
 (`<feed>/<pkgname>/<pkgver>-<pkgrel>/<arch>.json`) with `pkgname`,
