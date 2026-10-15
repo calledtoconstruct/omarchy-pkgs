@@ -1,6 +1,6 @@
 {
   "source": "local",
-  "release_ring": "fast",
+  "sync": false,
   "upstream": {
     "git_tags": "https://github.com/hyprwm/Hyprland.git",
     "tag_pattern": "v{pkgver}",
@@ -15,7 +15,7 @@
   ],
   "rebuilt_against": {
     "aarch64": {
-      "aquamarine": "0.15.0-2"
+      "aquamarine": "0.15.1-1.1"
     }
   }
 }

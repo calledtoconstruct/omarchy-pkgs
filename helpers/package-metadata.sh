@@ -3,25 +3,24 @@
 # Expects package directories in $PKGBUILDS_DIR, each with:
 #   .omarchy/package.json
 #
-# Minimal schema:
-#   { "source": "aur" }
-#   { "source": "aur", "sync": false }
-#   { "source": "aur", "aur": "different-aur-name" }
-#   { "source": "aur", "release_ring": "fast" }
-#   { "source": "aur", "skip_build": true }
-#   { "source": "aur", "pkgrel": { "suffix": 1, "offset": 1 } }
-#   { "source": "aur", "rebuild_on": ["qt6-base"] }
+# Minimal schema (legacy source:aur remains readable for initial imports):
 #   { "source": "local" }
+#   { "source": "local", "sync": false }
+#   { "source": "local", "release_ring": "fast" }
+#   { "source": "local", "skip_build": true }
+#   { "source": "local", "rebuild_on": ["qt6-base"] }
+#   { "source": "local", "upstream": { "watch": { "github": "owner/repo", "pattern": "v(?P<version>[0-9.]+)" } } }
 #   { "source": "local", "channels": ["edge"] }
 #   { "source": "local", "channels": ["edge", "rc", "stable"] }
 #   { "source": "local", "min_release_age": "24h" }
+#   { "source": "local", "auto_merge": true, "upstream": { "watch": { "git_branch": "...", "branch": "main" } } }
 #   { "source": "local", "upstream": { "github": "owner/repo", "checksums": "SHASUMS256.txt", "assets": { "x86_64": ["name-{tag}-x64.tar.xz"] } } }
 #   { "source": "local", "upstream": { "github": "owner/repo", "digests": true, "assets": { "x86_64": "name-{tag}-x64.tar.xz" } } }
 #   { "source": "local", "upstream": { "git_tags": "https://example/repo.git", "tag_pattern": "v{pkgver}", "sources": { "any": ["https://example/archive/{tag}.tar.gz"] } } }
 #   { "source": "local", "upstream": { "npm": "@scope/package", "sources": { "any": ["{npm_tarball}"] } } }
 #   { "source": "local", "upstream": { "debian": "https://example/debian/dists/stable/main/binary-amd64/Packages", "package": "example", "sources": { "any": ["https://example/releases/{pkgver}.tar.gz"] } } }
 #
-# bin/sync-aur also writes upstream_commit for AUR-backed packages, and
+# bin/import-aur records historical origin.aur and origin.commit;
 # bin/sync-rebuilds writes rebuilt_against for packages declaring rebuild_on.
 
 if [[ -z "${PKGBUILDS_DIR:-}" ]]; then
@@ -193,6 +192,18 @@ package_supports_arch() {
   esac
 }
 
+# The channel DB indexes only its newest version, but older published archives
+# remain immutable. Both the scheduler and build planner must skip an existing
+# filename even when the checkout differs from the version currently indexed.
+package_version_is_published() {
+  local repo_dir="$1" package="$2" version="$3" target="$4" path
+  for path in "$repo_dir/$package-$version-$target.pkg.tar."* \
+              "$repo_dir/$package-$version-any.pkg.tar."*; do
+    [[ -f "$path" && "$path" != *.sig ]] && return 0
+  done
+  return 1
+}
+
 # Channel membership: where a package may be published. Packages without a
 # `channels` key are members of every channel (they flow edge -> rc -> stable).
 package_has_channels() {
@@ -315,6 +326,32 @@ packages_for_upstream_sync() {
       basename "$pkgdir"
     fi
   done
+}
+
+# Upstream updates travel in one of two lanes. The reviewed lane is the
+# 6-hourly sync PR a maintainer reads before merging. A package that marks
+# "auto_merge": true rides the unattended lane instead: its bump PR is opened
+# and auto-merged by the branch tracker as soon as CI is green, which is how a
+# package that follows a moving branch (omarchy-dev, omasnap-git) gets rebuilt
+# without anyone clicking, and how trusted release feeds (browsers, large
+# vendors, Omacom's own projects) ship without waiting for review. The lanes are disjoint so a branch tip can never
+# hold up a reviewed vendor release, or the other way round.
+package_auto_merge() {
+  local pkgdir="$1" metadata
+  metadata=$(metadata_file_for_dir "$pkgdir")
+  [[ -f "$metadata" ]] || return 1
+  [[ "$(jq -r 'if has("auto_merge") then .auto_merge else false end' "$metadata")" == "true" ]]
+}
+
+# package_in_lane <pkgdir> <reviewed|auto-merge|all>
+package_in_lane() {
+  local pkgdir="$1" lane="$2"
+  case "$lane" in
+    all | "") return 0 ;;
+    auto-merge) package_auto_merge "$pkgdir" ;;
+    reviewed) ! package_auto_merge "$pkgdir" ;;
+    *) echo "invalid lane: $lane (expected reviewed, auto-merge, or all)" >&2; return 2 ;;
+  esac
 }
 
 # Packages that must be rebuilt when a dependency they link against changes,
@@ -504,6 +541,15 @@ validate_package_metadata() {
     return 1
   fi
 
+  if ! jq -e 'if has("auto_merge") | not then true else (.auto_merge | type) == "boolean" end' "$metadata" >/dev/null; then
+    echo "invalid auto_merge for $(basename "$pkgdir"): must be boolean"
+    return 1
+  fi
+  if package_auto_merge "$pkgdir" && ! package_has_upstream_provider "$pkgdir" && ! package_has_upstream_hook "$pkgdir"; then
+    echo "invalid auto_merge for $(basename "$pkgdir"): only an upstream watch, provider, or hook can be auto-merged"
+    return 1
+  fi
+
   # `has` rather than `// {}`: jq's // treats false as absent, which would
   # let "upstream": false slip through as an empty declaration.
   if ! jq -e '
@@ -523,8 +569,9 @@ validate_package_metadata() {
     if has("upstream") | not then true
     elif (.upstream | type) != "object" then false
     else .upstream |
-      ([has("github"), has("git_tags"), has("npm"), has("debian")] | map(select(.)) | length) == 1
-      and if has("github") then
+      ([has("github"), has("git_tags"), has("npm"), has("debian"), has("watch")] | map(select(.)) | length) == 1
+      and if has("watch") then (.watch | type == "object")
+      elif has("github") then
         (.github | type == "string" and test("\\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\z"))
         and (if has("checksums") then (.checksums | type == "string" and length > 0) else true end)
         and (if has("digests") then (.digests | type == "boolean") else true end)
@@ -550,8 +597,12 @@ validate_package_metadata() {
       end
     end
   ' "$metadata" >/dev/null; then
-    echo "invalid upstream for $(basename "$pkgdir"): configure exactly one valid github, git_tags, npm, or debian provider"
+    echo "invalid upstream for $(basename "$pkgdir"): configure exactly one valid github, git_tags, npm, debian, or watch provider"
     return 1
+  fi
+
+  if jq -e '.upstream? | objects | has("watch")' "$metadata" >/dev/null; then
+    python3 "${BASH_SOURCE[0]%/*}/upstream-watch.py" validate "$pkgdir" || return 1
   fi
 
   pkgrel_type=$(jq -r 'if has("pkgrel") then .pkgrel | type else "missing" end' "$metadata")
@@ -572,6 +623,15 @@ validate_package_metadata() {
 
   if ! jq -e '(.rebuild_on // []) | type == "array" and all(type == "string" and length > 0)' "$metadata" >/dev/null; then
     echo "invalid rebuild_on for $(basename "$pkgdir"): must be an array of package names"
+    return 1
+  fi
+
+  # The fast ring ships one edge build to every channel at once, so nothing
+  # rebuilds it when a channel moves under it: a package that needs those
+  # rebuilds reaches rc and stable with the release instead. The rest of the
+  # rule is checked on the built package (helpers/fast-ring-check.sh).
+  if package_is_fast_ring "$pkgdir" && jq -e '(.rebuild_on // []) | length > 0' "$metadata" >/dev/null; then
+    echo "invalid release_ring for $(basename "$pkgdir"): a package with rebuild_on cannot be on the fast ring"
     return 1
   fi
 
@@ -600,4 +660,25 @@ validate_package_metadata() {
     echo "invalid rebuilt_against for $(basename "$pkgdir"): records a package that rebuild_on does not name"
     return 1
   fi
+}
+
+# The runner an entry builds on, as the JSON list runs-on takes. x86_64 builds
+# on the droplet pool. aarch64 builds natively on GitHub's arm64 runner (4
+# vCPU), except a kernel: there the compile is 95 of 105 minutes, so it goes
+# to Namespace's Apple-backed runner (Linux on Apple Silicon, 12 vCPU), where
+# the whole job takes 24. Its cores are the fast ones: the 32-core AmpereOne
+# runner took 66. A kernel is a package named linux-*; the firmware and pkgbase
+# shim packages share the prefix and build in seconds, so they stay put.
+package_runner() {
+  local name="$1" arch="$2"
+
+  if [[ $arch != aarch64 ]]; then
+    echo '["self-hosted","omarchy-builder"]'
+    return
+  fi
+  case "$name" in
+  linux-firmware-* | linux-*-shim) echo '["ubuntu-24.04-arm"]' ;;
+  linux-*) echo '["namespace-profile-arm64-linux-apple-12x32"]' ;;
+  *) echo '["ubuntu-24.04-arm"]' ;;
+  esac
 }

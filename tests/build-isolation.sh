@@ -62,6 +62,17 @@ run_build() {
   "$TEST_ROOT/bin/build" --arch "$TEST_ARCH" --package "$@"
 }
 
+# Exercise keyring population even if the image's keyring package is current.
+fixture keyring ''
+cat >> "$TEST_ROOT/pkgbuilds/keyring/PKGBUILD" <<'EOF'
+check() { sudo pacman-key --populate archlinux; }
+EOF
+run_build keyring > "$TEST_ROOT/keyring.log" 2>&1 || {
+  cat "$TEST_ROOT/keyring.log"
+  exit 1
+}
+printf 'PASS: keyring population works without a private key in the image\n'
+
 fixture omarchy-settings ''
 fixture omarchy "depends=('omarchy-settings=1')"
 fixture omarchy-settings-dev "provides=('omarchy-settings'); conflicts=('omarchy-settings')"
@@ -89,11 +100,17 @@ EOF
 fixture consumer "checkdepends_${TEST_ARCH}=('broken')"
 fixture transitive "makedepends=('consumer')"
 fixture independent ''
-if run_build transitive consumer broken independent > "$TEST_ROOT/failure.log" 2>&1; then
+failure_status=0
+OMARCHY_BUILD_RESULT_DIR="$TEST_ROOT/results" run_build transitive consumer broken independent > "$TEST_ROOT/failure.log" 2>&1 || failure_status=$?
+if [[ "$failure_status" != 2 ]]; then
   cat "$TEST_ROOT/failure.log"
-  echo 'FAIL: a failed prerequisite did not fail the run' >&2
+  echo "FAIL: expected completed package failure (2), got $failure_status" >&2
   exit 1
 fi
+[[ -f "$TEST_ROOT/results/complete" ]]
+[[ $(cat "$TEST_ROOT/results/failed") == broken ]]
+[[ $(cat "$TEST_ROOT/results/blocked") == $'transitive\nconsumer' || $(cat "$TEST_ROOT/results/blocked") == $'consumer\ntransitive' ]]
+[[ $(cat "$TEST_ROOT/results/artifacts") == "independent-1-1-$TEST_ARCH.pkg.tar.zst" ]]
 grep -q 'consumer blocked by unsuccessful dependency: broken' "$TEST_ROOT/failure.log"
 grep -q 'transitive blocked by unsuccessful dependency: consumer' "$TEST_ROOT/failure.log"
 compgen -G "$TEST_ROOT/build-output/edge/$TEST_ARCH/independent-1-1-*.pkg.tar.zst" >/dev/null
