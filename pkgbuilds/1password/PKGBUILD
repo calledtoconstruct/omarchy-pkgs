@@ -60,9 +60,14 @@ package() {
     sed -i 's|^Exec=.*|Exec=/opt/1Password/1password --force-device-scale-factor=1 %U|' \
         "${pkgdir}/usr/share/applications/1password.desktop"
 
-    # Binary builds cannot use the build host's passwd for polkit owners.
-    sed 's/\${POLICY_OWNERS}/unix-group:wheel/g' \
+    # Polkit owners have to be the installing machine's users, which the build
+    # host cannot know; the install scriptlet fills them in over this root stub.
+    sed 's/\${POLICY_OWNERS}/unix-user:root/g' \
         ./com.1password.1Password.policy.tpl > ./com.1password.1Password.policy
+    if grep -q '\${' ./com.1password.1Password.policy; then
+        echo "1Password's polkit template has a placeholder this recipe does not fill" >&2
+        return 1
+    fi
     install -Dm0644 com.1password.1Password.policy -t "${pkgdir}"/usr/share/polkit-1/actions/
 
     # Install examples

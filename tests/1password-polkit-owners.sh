@@ -1,29 +1,46 @@
 #!/bin/bash
-# Binary 1password packages cannot bake the build host passwd into polkit owners.
+# Published 1password packages are built on a build host, so polkit owners
+# must come from the installing machine, as users: polkit ignores groups here.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 PKG="$ROOT/pkgbuilds/1password"
-INSTALL="$PKG/1password.install"
-PKGBUILD="$PKG/PKGBUILD"
 TPL="$ROOT/tests/fixtures/1password/com.1password.1Password.policy.tpl"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-if grep -n '/etc/passwd' "$PKGBUILD"; then
-  fail "PKGBUILD still reads /etc/passwd at package time"
-fi
-grep -q 'unix-group:wheel' "$PKGBUILD" || fail "PKGBUILD does not pin unix-group:wheel"
-if grep -nE 'render_1password_polkit_policy|POLICY_TPL|POLICY_DEST' "$INSTALL"; then
-  fail "install scriptlet still rewrites the polkit policy"
+if grep -n '/etc/passwd' "$PKG/PKGBUILD"; then
+  fail "PKGBUILD reads the build host's passwd"
 fi
 
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-sed 's/\${POLICY_OWNERS}/unix-group:wheel/g' "$TPL" > "$tmp"
-grep -q 'unix-group:wheel' "$tmp" || fail "substituted policy missing unix-group:wheel"
-if grep -q 'unix-user:' "$tmp"; then
-  fail "substituted policy still names a unix-user"
-fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
 
-printf 'PASS: 1password polkit owners are unix-group:wheel\n'
+# The stub the package ships: the template rendered by package()'s own sed line.
+sed_line=$(grep -o "sed 's/\\\\\${POLICY_OWNERS}/[^']*/g'" "$PKG/PKGBUILD") || fail "package() does not render the template"
+eval "$sed_line" "$TPL" > "$tmp/policy"
+if grep -q '\${' "$tmp/policy"; then fail "shipped policy keeps a placeholder"; fi
+[[ $(grep -c 'policykit.owner">unix-user:root<' "$tmp/policy") == 2 ]] || fail "shipped policy is not the root stub"
+
+cat > "$tmp/passwd" <<'PASSWD'
+root:x:0:0::/root:/bin/bash
+builder:x:999:999::/home/builder:/bin/bash
+alice:x:1000:1000::/home/alice:/bin/bash
+bob:x:1001:1001::/home/bob:/bin/zsh
+nobody:x:65534:65534::/:/usr/bin/nologin
+PASSWD
+
+# shellcheck disable=SC1091
+source "$PKG/1password.install"
+set_policy_owners "$tmp/policy" "$tmp/passwd"
+[[ $(grep -c 'policykit.owner">unix-user:alice unix-user:bob<' "$tmp/policy") == 2 ]] ||
+  fail "installed policy does not name the machine's users: $(grep owner "$tmp/policy")"
+
+# An upgrade rewrites rather than appends.
+set_policy_owners "$tmp/policy" "$tmp/passwd"
+[[ $(grep -c 'policykit.owner">unix-user:alice unix-user:bob<' "$tmp/policy") == 2 ]] || fail "upgrade does not rewrite the owners"
+
+grep -q 'set_policy_owners' <(declare -f post_install) || fail "post_install does not set owners"
+grep -q 'set_policy_owners' <(declare -f post_upgrade) || fail "post_upgrade does not set owners"
+
+printf 'PASS: 1password polkit owners are the installing machine users\n'
