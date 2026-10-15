@@ -33,6 +33,7 @@ elephant-symbols pkg:github/abenz1267/elephant@{version}
 elephant-todo pkg:github/abenz1267/elephant@{version}
 elephant-unicode pkg:github/abenz1267/elephant@{version}
 elephant-websearch pkg:github/abenz1267/elephant@{version}
+elsewhen pkg:github/omacom/elsewhen@{version}
 flea pkg:github/thisisgm/flea@{version}
 github-copilot-cli pkg:github/github/copilot-cli@{version}
 herdr pkg:github/herdrdev/herdr@{version}
@@ -49,6 +50,7 @@ localsend pkg:github/localsend/localsend@{version}
 makima-bin pkg:github/cyber-sushi/makima@{version}
 nautilus-dropbox pkg:github/dropbox/nautilus-dropbox@{version}
 nautilus-open-any-terminal pkg:github/Stunkymonkey/nautilus-open-any-terminal@{version}
+obs-studio pkg:github/obsproject/obs-studio@{version}
 omacalc pkg:github/omacom-io/omacalc@{version}
 omacut pkg:github/omacom-io/omacut@{version}
 omakade pkg:github/btsouth/omakade@{version}
@@ -65,6 +67,7 @@ once-bin pkg:github/basecamp/once@{version}
 openai-codex-bin pkg:github/openai/codex@{version}
 python-mediapipe pkg:github/google-ai-edge/mediapipe@{version}
 python-terminaltexteffects pkg:github/ChrisBuilds/terminaltexteffects@{version}
+pinta pkg:github/PintaProject/Pinta@{version}
 qmk-hid pkg:github/FrameworkComputer/qmk_hid@{version}
 rog-control-center pkg:github/OpenGamingCollective/asusctl@{version}
 rustdesk pkg:github/rustdesk/rustdesk@{version}

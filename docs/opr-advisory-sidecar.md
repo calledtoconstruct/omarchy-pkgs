@@ -111,7 +111,7 @@ bin/sync-advisories --mirror edge --arch x86_64 --package mise-bin --feed ./feed
 
 Names with no purl also stay `missing`. The default `./tests/demo-local-opr.sh` run stubs `curl` so CI does not call the network, and that stub reports `CVE-2026-4242` for every mapped package. `./tests/demo-local-opr.sh --live` uses the real OSV API, caches each query for the second arch, and writes the returned CVEs. It does not sign and does not rebuild packages. Docker is not required. It needs `bash`, `jq`, `tar`, and `curl`. Both runs replace `/tmp/opr-local-demo`. That copy is not part of the git checkout.
 
-GitHub `url` values are mapped only when a version slot can take `pkgver`. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped and still receive a `missing` sidecar in this local tree.
+GitHub `url` values are mapped only when a version slot can take `pkgver`. That includes `elsewhen`, `obs-studio`, and `pinta`, whose release tags equal `pkgver`. GitLab sources, commit or branch archives, toolchain downloads, and `omarchy-chromium-bin` (the release tag is not `pkgver`) stay unmapped and still receive a `missing` sidecar in this local tree.
 
 ```
 ./tests/demo-local-opr.sh
